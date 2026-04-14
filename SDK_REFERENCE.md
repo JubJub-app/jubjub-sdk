@@ -83,8 +83,8 @@ That's it.
 | JubJub | $0.03 (3%) | Extracted at router level |
 | Content contract | $0.97 | On-chain transfer |
 | Catalogue | $0.97 | Auto-forwarded from content contract |
-| Tom (70% brand token) | $0.679 | Proportional to brand token holdings |
-| Danielle (30% brand token) | $0.291 | Proportional to brand token holdings |
+| Creator A (70% brand token) | $0.679 | Proportional to brand token holdings |
+| Creator B (30% brand token) | $0.291 | Proportional to brand token holdings |
 
 Revenue streams across JubJub:
 
@@ -205,7 +205,7 @@ Three layers, each an ERC-1155 on Base:
 ```
 Brand Token (10,000 supply per catalogue)
   Tradeable. Represents proportional ownership of ALL content revenue.
-  Example: Tom 7,000 / Danielle 3,000
+  Example: Creator A 7,000 / Creator B 3,000
      |
      v
 Catalogue Contract (one per team or solo creator)
