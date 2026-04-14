@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JubJub SDK Demo</title>
+  <style>
+    body { margin: 0; background: #0a0a0a; color: #fff; font-family: system-ui, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; }
+    h1 { font-size: 1.5rem; margin-bottom: 1rem; }
+    .video-container { position: relative; max-width: 720px; width: 100%; }
+    video { width: 100%; border-radius: 12px; }
+    #log { margin-top: 1rem; font-size: 12px; font-family: monospace; color: #888; max-height: 200px; overflow-y: auto; }
+  </style>
+</head>
+<body>
+  <h1>JubJub Pay-Per-View Demo</h1>
+
+  <div class="video-container">
+    <!--
+      Replace with your own video source.
+      The video serves from YOUR CDN — JubJub only handles payments.
+    -->
+    <video
+      id="player"
+      src="https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"
+      controls
+      playsinline
+    ></video>
+  </div>
+
+  <div id="log"></div>
+
+  <!-- Load JubJub SDK -->
+  <script src="../dist/jubjub-sdk.umd.js"></script>
+  <script>
+    const log = document.getElementById('log');
+    function addLog(msg) {
+      const line = document.createElement('div');
+      line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      log.prepend(line);
+    }
+
+    // Replace 'cnt_xxx' with a real content ID from your JubJub account.
+    // You can get one by calling POST /v2/platform/register-content.
+    const contentId = 'cnt_xxx';
+
+    const sdk = JubJub.play(contentId, document.getElementById('player'), {
+      apiUrl: 'https://api.jubjubapp.com',
+      showCostOverlay: true,
+      overlayPosition: 'bottom-right',
+      onCostUpdate: (cost, seconds) => {
+        // Called every 200ms with running cost
+      },
+      onSessionStart: (sessionId) => {
+        addLog(`Session started: ${sessionId}`);
+      },
+      onSessionEnd: (summary) => {
+        addLog(`Session ended: ${summary.seconds.toFixed(1)}s, $${summary.cost.toFixed(4)}`);
+      },
+      onWalletConnected: (address) => {
+        addLog(`Wallet: ${address.slice(0, 8)}...${address.slice(-4)}`);
+      },
+      onError: (err) => {
+        addLog(`Error: ${err.message}`);
+      },
+    });
+
+    sdk.on('content:loaded', (info) => {
+      addLog(`Content loaded: ${info.title} ($${info.price_per_minute_usdc}/min)`);
+    });
+
+    sdk.on('approved', () => {
+      addLog('USDC approved for router');
+    });
+
+    sdk.on('ready', () => {
+      addLog('Ready — streaming payments active');
+    });
+  </script>
+</body>
+</html>
