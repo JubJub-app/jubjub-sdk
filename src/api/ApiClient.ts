@@ -53,13 +53,18 @@ export class ApiClient {
     });
 
     if (res.status === 409) {
-      // Duplicate — parse existing content_id from error response
+      // Duplicate — extract the existing ID from the error detail.
+      // Backend says: "Content with this media hash already registered (media_id=cnt_xxx)"
+      // or may use "content_id=cnt_xxx". Match either.
       const err = await res.json().catch(() => ({}));
-      const match = (err.detail || '').match(/content_id[=:]?\s*(\S+)/);
+      const detail: string = err.detail || '';
+      const match = detail.match(/(?:content_id|media_id)[=:]?\s*(cnt_[a-zA-Z0-9_]+)/);
       if (match) {
-        return { content_id: match[1].replace(/[).,]$/, '') };
+        return { content_id: match[1], duplicate: true };
       }
-      throw new Error(`Content already registered: ${err.detail || res.status}`);
+      // If we can't parse the ID, still don't throw — the content exists,
+      // we just can't extract its ID. Fall through to the error below.
+      throw new Error(`Content already registered but ID could not be parsed: ${detail}`);
     }
 
     if (!res.ok) {
