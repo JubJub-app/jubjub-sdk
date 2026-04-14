@@ -58,6 +58,52 @@ const DEFAULTS: Required<
 };
 
 // ---------------------------------------------------------------------------
+// Loading indicator shown while payment setup runs
+// ---------------------------------------------------------------------------
+function _createLoader(video: HTMLVideoElement): { remove: () => void } {
+  const el = document.createElement('div');
+  el.setAttribute('data-jubjub-loader', 'true');
+  el.style.cssText =
+    'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);' +
+    'z-index:1001;display:flex;align-items:center;gap:8px;' +
+    'background:rgba(0,0,0,0.8);color:#fff;padding:8px 16px;' +
+    'border-radius:8px;font-family:system-ui,sans-serif;font-size:13px;';
+
+  const spinner = document.createElement('span');
+  spinner.style.cssText =
+    'display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,0.3);' +
+    'border-top-color:#fff;border-radius:50%;animation:jubjub-spin 0.8s linear infinite;';
+  el.appendChild(spinner);
+
+  const text = document.createElement('span');
+  text.textContent = 'Connecting wallet\u2026';
+  el.appendChild(text);
+
+  // Inject keyframes if not already present
+  if (!document.getElementById('jubjub-spin-style')) {
+    const style = document.createElement('style');
+    style.id = 'jubjub-spin-style';
+    style.textContent = '@keyframes jubjub-spin{to{transform:rotate(360deg)}}';
+    document.head.appendChild(style);
+  }
+
+  // Insert into a positioned wrapper (overlay may have created one already)
+  let wrapper = video.parentElement;
+  if (!wrapper || wrapper === document.body) {
+    wrapper = document.createElement('div');
+    wrapper.style.cssText = 'position:relative;display:inline-block;width:100%;';
+    video.parentElement?.insertBefore(wrapper, video);
+    wrapper.appendChild(video);
+  }
+  if (getComputedStyle(wrapper).position === 'static') {
+    wrapper.style.position = 'relative';
+  }
+  wrapper.appendChild(el);
+
+  return { remove: () => el.remove() };
+}
+
+// ---------------------------------------------------------------------------
 // JubJub class
 // ---------------------------------------------------------------------------
 export class JubJub extends EventEmitter {
@@ -272,30 +318,53 @@ export class JubJub extends EventEmitter {
     });
 
     // Defer the payment flow to the video's play event.
+    // Pause immediately so no free seconds leak, run setup, then resume.
     const handler = () => {
       video.removeEventListener('play', handler);
-      console.log('[JubJub] Play event fired — starting payment flow');
+      video.pause();
+      console.log('[JubJub] Play event fired — paused, starting payment setup');
 
-      if (contentId) {
-        JubJub.play(contentId, video);
-      } else if (creator) {
-        const mediaUrl =
-          video.dataset.jubjubMediaUrl ||
-          video.src ||
-          video.querySelector('source')?.src ||
-          '';
-        JubJub.play(
-          {
-            creator,
-            title: video.dataset.jubjubTitle || document.title,
-            mediaUrl,
-            pricePerMinute: video.dataset.jubjubPrice
-              ? parseFloat(video.dataset.jubjubPrice)
-              : undefined,
-          },
-          video,
-        );
-      }
+      // Loading indicator
+      const loader = _createLoader(video);
+
+      const setupAndResume = async () => {
+        let sdk: JubJub;
+        try {
+          if (contentId) {
+            sdk = JubJub.play(contentId, video);
+          } else {
+            const mediaUrl =
+              video.dataset.jubjubMediaUrl ||
+              video.src ||
+              video.querySelector('source')?.src ||
+              '';
+            sdk = JubJub.play(
+              {
+                creator: creator!,
+                title: video.dataset.jubjubTitle || document.title,
+                mediaUrl,
+                pricePerMinute: video.dataset.jubjubPrice
+                  ? parseFloat(video.dataset.jubjubPrice)
+                  : undefined,
+              },
+              video,
+            );
+          }
+          // Wait for the 'ready' event (session active) or 'error'
+          await new Promise<void>((resolve) => {
+            sdk.on('ready', () => resolve());
+            sdk.on('error', () => resolve());
+            // Safety timeout — don't block forever
+            setTimeout(resolve, 15_000);
+          });
+        } catch {
+          // Setup failed — play free
+        }
+        loader.remove();
+        video.play().catch(() => {});
+      };
+
+      setupAndResume();
     };
 
     video.addEventListener('play', handler);
