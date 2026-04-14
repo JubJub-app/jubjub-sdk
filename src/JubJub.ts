@@ -94,6 +94,7 @@ export class JubJub extends EventEmitter {
    * with `data-jubjub-*` attributes and attaches payment flows.
    */
   static init(config: JubJubInitConfig): void {
+    console.log('[JubJub] init() called', { key: config.platformKey?.slice(0, 10) + '...' });
     _platformKey = config.platformKey;
     if (config.apiUrl) _initApiUrl = config.apiUrl;
     if (config.network) _initNetwork = config.network;
@@ -101,15 +102,18 @@ export class JubJub extends EventEmitter {
       _initShowOverlay = (config as any).showCostOverlay;
     }
 
-    // Guard against double-init (script loaded twice, SPA re-mount, etc.)
-    if (_initialized) return;
+    if (_initialized) {
+      console.log('[JubJub] Already initialized — skipping');
+      return;
+    }
     _initialized = true;
 
-    // Auto-discover when DOM is ready
     if (typeof document === 'undefined') return;
     if (document.readyState === 'loading') {
+      console.log('[JubJub] DOM loading — deferring auto-discover');
       document.addEventListener('DOMContentLoaded', () => JubJub._autoDiscover());
     } else {
+      console.log('[JubJub] DOM ready — running auto-discover now');
       JubJub._autoDiscover();
     }
   }
@@ -207,8 +211,9 @@ export class JubJub extends EventEmitter {
 
   private static _autoDiscover(): void {
     const selector = 'video[data-jubjub-content-id], video[data-jubjub-creator]';
-    document.querySelectorAll<HTMLVideoElement>(selector)
-      .forEach((v) => JubJub._prepareVideo(v));
+    const videos = document.querySelectorAll<HTMLVideoElement>(selector);
+    console.log(`[JubJub] Auto-discover found ${videos.length} video(s)`);
+    videos.forEach((v) => JubJub._prepareVideo(v));
 
     // Watch for dynamically added videos (SPA, lazy loading).
     // Only react to added <video> elements, NOT to overlay/wrapper
@@ -246,19 +251,30 @@ export class JubJub extends EventEmitter {
    * Wait for the user to press play — that triggers wallet connect + session.
    */
   private static _prepareVideo(video: HTMLVideoElement): void {
-    if (_processed.has(video)) return;
-    if (video.dataset.jubjubDisabled != null) return;
+    if (_processed.has(video)) {
+      console.log('[JubJub] Video already processed — skipping');
+      return;
+    }
+    if (video.dataset.jubjubDisabled != null) {
+      console.log('[JubJub] Video has data-jubjub-disabled — skipping');
+      return;
+    }
     _processed.add(video);
 
     const contentId = video.dataset.jubjubContentId;
     const creator = video.dataset.jubjubCreator;
     if (!contentId && !creator) return;
 
+    console.log('[JubJub] Prepared video — waiting for play event', {
+      contentId: contentId || '(auto-register)',
+      creator: creator || '(pre-registered)',
+      src: (video.src || '').slice(0, 60),
+    });
+
     // Defer the payment flow to the video's play event.
-    // The user presses play → wallet connects → session starts → overlay appears.
-    // If they never press play, no prompts, no network calls.
     const handler = () => {
       video.removeEventListener('play', handler);
+      console.log('[JubJub] Play event fired — starting payment flow');
 
       if (contentId) {
         JubJub.play(contentId, video);
@@ -335,10 +351,15 @@ export class JubJub extends EventEmitter {
     }
 
     const cached = _registrationCache.get(info.mediaUrl);
-    if (cached) return this.attach(cached, video);
+    if (cached) {
+      console.log('[JubJub] Using cached content_id:', cached);
+      return this.attach(cached, video);
+    }
 
+    console.log('[JubJub] Registering content...', { creator: info.creator, title: info.title });
     const result = await this.api.registerContent(_platformKey, info);
     const contentId = result.content_id;
+    console.log('[JubJub] Registered:', contentId, result.duplicate ? '(duplicate)' : '(new)');
     _registrationCache.set(info.mediaUrl, contentId);
 
     return this.attach(contentId, video);
@@ -353,8 +374,11 @@ export class JubJub extends EventEmitter {
       return;
     }
 
+    console.log('[JubJub] attach() starting for', contentId);
+
     try {
       // 1. Fetch content + chain config
+      console.log('[JubJub] Step 1: Fetching playback info...');
       try {
         this.contentInfo = await this.api.getPlaybackInfo(contentId);
       } catch (fetchErr: any) {
@@ -365,9 +389,11 @@ export class JubJub extends EventEmitter {
         this.emit('error', new Error(msg));
         return;
       }
+      console.log('[JubJub] Step 1 done:', this.contentInfo.title, `$${this.contentInfo.price_per_minute_usdc}/min`);
       this.emit('content:loaded', this.contentInfo);
 
       // 2. Connect wallet (auto or BYO)
+      console.log('[JubJub] Step 2: Connecting wallet...');
       let address: string;
       try {
         address = await this._ensureWallet();
@@ -375,25 +401,33 @@ export class JubJub extends EventEmitter {
         console.log('[JubJub] No wallet detected. Video plays free.');
         return;
       }
+      console.log('[JubJub] Step 2 done: wallet', address.slice(0, 10) + '...');
       this.emit('wallet:connected', address);
 
       // 3. Create viewer session
+      console.log('[JubJub] Step 3: Creating viewer session...');
       await this.api.createViewerSession(contentId, address);
+      console.log('[JubJub] Step 3 done');
 
       // 4. Approve USDC
+      console.log('[JubJub] Step 4: Checking USDC approval...');
       this.approval = new Approval(this.wallet, {
         usdc_address: this.contentInfo.usdc_address,
         payment_router: this.contentInfo.payment_router,
         chain_id: this.contentInfo.chain_id,
       });
       const didApprove = await this.approval.ensureApproved();
+      console.log('[JubJub] Step 4 done:', didApprove ? 'approved' : 'already approved');
       if (didApprove) this.emit('approved', address);
 
       // 5. Create streaming session
+      console.log('[JubJub] Step 5: Creating streaming session...');
       this.session = await Session.create(contentId, address, this.api);
+      console.log('[JubJub] Step 5 done: session', this.session.id);
       this.emit('session:start', this.session.id);
 
       // 6. Cost tracker
+      console.log('[JubJub] Step 6: Starting cost tracker + overlay');
       this.costTracker = new CostTracker(
         video,
         this.contentInfo.price_per_minute_usdc,
@@ -422,6 +456,7 @@ export class JubJub extends EventEmitter {
       };
       window.addEventListener('beforeunload', this.beforeUnloadHandler);
 
+      console.log('[JubJub] Ready — streaming payments active');
       this.emit('ready');
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
