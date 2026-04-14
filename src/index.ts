@@ -14,5 +14,7 @@ export type {
   WalletLike,
 } from './types';
 
-// UMD builds — Vite's library mode handles the global assignment via
-// the `name: 'JubJub'` config. For ESM consumers this is a no-op.
+// Default export = the JubJub class. In UMD builds this becomes
+// the value of window.JubJub so static methods like
+// JubJub.play() and JubJub.connectBrowserWallet() work directly.
+export { JubJub as default } from './JubJub';

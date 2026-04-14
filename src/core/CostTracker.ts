@@ -4,17 +4,21 @@ import type { Session } from './Session';
 import type { CostInfo } from '../types';
 
 const SEGMENT_SECONDS = 6;
+const MAX_NORMAL_DELTA = 2; // seconds — anything larger is a seek
 
 export class CostTracker extends EventEmitter {
   private video: HTMLVideoElement;
   private pricePerMinute: number;
   private pricePerSecond: number;
-  private lastBoundaryIndex = 0;
-  private lastReportedSecond = 0;
   private session: Session;
   private api: ApiClient;
   private displayInterval: number | null = null;
   private timeUpdateHandler: (() => void) | null = null;
+
+  // Accumulative playback tracking — never decreases.
+  private totalPlaybackSeconds = 0;
+  private lastCurrentTime = 0;
+  private lastSegmentBoundary = 0; // based on totalPlaybackSeconds
 
   constructor(
     video: HTMLVideoElement,
@@ -28,33 +32,33 @@ export class CostTracker extends EventEmitter {
     this.pricePerSecond = pricePerMinute / 60;
     this.session = session;
     this.api = api;
+    this.lastCurrentTime = video.currentTime;
   }
 
   start(): void {
-    // Segment boundary tracking via timeupdate
     this.timeUpdateHandler = () => {
-      const currentTime = this.video.currentTime;
+      const now = this.video.currentTime;
+      const delta = now - this.lastCurrentTime;
+      this.lastCurrentTime = now;
 
-      // Backward jump — reset pointer
-      if (currentTime < this.lastReportedSecond) {
-        this.lastReportedSecond = currentTime;
-        return;
+      // Normal forward playback (small positive delta): accumulate
+      if (delta > 0 && delta <= MAX_NORMAL_DELTA) {
+        this.totalPlaybackSeconds += delta;
       }
-      // Large forward jump (>12s) — skip, don't charge
-      if (currentTime - this.lastReportedSecond > 12) {
-        this.lastReportedSecond = currentTime;
-        return;
-      }
+      // delta <= 0 → backward seek: ignore (don't subtract cost)
+      // delta > MAX_NORMAL_DELTA → forward seek: ignore (didn't watch)
 
-      const currentIndex = Math.floor(currentTime / SEGMENT_SECONDS);
-      if (currentIndex > this.lastBoundaryIndex) {
-        const crossed = currentIndex - this.lastBoundaryIndex;
+      // Segment boundary based on accumulated playback, not timeline
+      const currentBoundary = Math.floor(
+        this.totalPlaybackSeconds / SEGMENT_SECONDS,
+      );
+      if (currentBoundary > this.lastSegmentBoundary) {
+        const crossed = currentBoundary - this.lastSegmentBoundary;
         for (let i = 0; i < crossed; i++) {
           this.api.recordSegment(this.session.id).catch(() => {});
         }
-        this.lastBoundaryIndex = currentIndex;
+        this.lastSegmentBoundary = currentBoundary;
       }
-      this.lastReportedSecond = currentTime;
     };
 
     this.video.addEventListener('timeupdate', this.timeUpdateHandler);
@@ -79,11 +83,11 @@ export class CostTracker extends EventEmitter {
   }
 
   getPlaybackSeconds(): number {
-    return this.video.currentTime;
+    return this.totalPlaybackSeconds;
   }
 
   getCost(): CostInfo {
-    const seconds = this.video.currentTime;
+    const seconds = this.totalPlaybackSeconds;
     const usdc = seconds * this.pricePerSecond;
     return {
       usdc,

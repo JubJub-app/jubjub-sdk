@@ -1,3 +1,5 @@
+import { createWalletClient, custom, type WalletClient } from 'viem';
+import { baseSepolia } from 'viem/chains';
 import { EventEmitter } from './EventEmitter';
 import { ApiClient } from './api/ApiClient';
 import { Wallet } from './core/Wallet';
@@ -10,6 +12,7 @@ import type {
   ContentInfo,
   SessionSummary,
   CostInfo,
+  WalletLike,
 } from './types';
 
 const DEFAULT_API_URL = 'https://api.jubjubapp.com';
@@ -197,5 +200,67 @@ export class JubJub extends EventEmitter {
 
   getContentInfo(): ContentInfo | null {
     return this.contentInfo;
+  }
+
+  /**
+   * Connect a browser-injected wallet (MetaMask, Coinbase Wallet, etc.).
+   *
+   * Returns a viem WalletClient that satisfies the WalletLike interface.
+   * Works with any EIP-1193 provider at `window.ethereum`.
+   *
+   * ```js
+   * const wallet = await JubJub.connectBrowserWallet();
+   * JubJub.play('cnt_xxx', video, { wallet });
+   * ```
+   */
+  static async connectBrowserWallet(): Promise<WalletLike> {
+    const ethereum = (window as any).ethereum;
+    if (!ethereum) {
+      throw new Error(
+        'No browser wallet detected. Install MetaMask or another wallet extension.',
+      );
+    }
+
+    // Request account access
+    const accounts: string[] = await ethereum.request({
+      method: 'eth_requestAccounts',
+    });
+    if (!accounts.length) {
+      throw new Error('No accounts returned from wallet.');
+    }
+
+    const address = accounts[0] as `0x${string}`;
+
+    // Switch to Base Sepolia if needed
+    try {
+      await ethereum.request({
+        method: 'wallet_switchEthereumChain',
+        params: [{ chainId: '0x14A34' }], // 84532
+      });
+    } catch (switchError: any) {
+      // Chain not added — try to add it
+      if (switchError.code === 4902) {
+        await ethereum.request({
+          method: 'wallet_addEthereumChain',
+          params: [
+            {
+              chainId: '0x14A34',
+              chainName: 'Base Sepolia',
+              nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
+              rpcUrls: ['https://sepolia.base.org'],
+              blockExplorerUrls: ['https://sepolia.basescan.org'],
+            },
+          ],
+        });
+      }
+    }
+
+    const client = createWalletClient({
+      account: address,
+      chain: baseSepolia,
+      transport: custom(ethereum),
+    });
+
+    return client as unknown as WalletLike;
   }
 }
