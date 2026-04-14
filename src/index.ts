@@ -8,6 +8,8 @@ export { CostOverlay } from './ui/CostOverlay';
 export { EventEmitter } from './EventEmitter';
 export type {
   JubJubOptions,
+  JubJubInitConfig,
+  ContentRegistration,
   ContentInfo,
   SessionSummary,
   CostInfo,

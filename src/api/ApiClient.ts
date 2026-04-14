@@ -12,6 +12,64 @@ export class ApiClient {
     this.sessionToken = token;
   }
 
+  // -- Platform registration (platform key auth) --
+
+  async registerContent(
+    platformKey: string,
+    info: {
+      creator: string;
+      title: string;
+      mediaUrl: string;
+      description?: string;
+      pricePerMinute?: number;
+      platformName?: string;
+      platformVideoId?: string;
+      platformVideoUrl?: string;
+    },
+  ): Promise<{ content_id: string; [key: string]: unknown }> {
+    const isWallet = /^0x[0-9a-fA-F]{40}$/.test(info.creator);
+    const body: Record<string, unknown> = {
+      title: info.title,
+      media_url: info.mediaUrl,
+    };
+    if (isWallet) {
+      body.creator_wallet = info.creator;
+    } else {
+      body.creator_email = info.creator;
+    }
+    if (info.description) body.description = info.description;
+    if (info.pricePerMinute != null) body.price_per_minute = info.pricePerMinute;
+    if (info.platformName) body.platform_name = info.platformName;
+    if (info.platformVideoId) body.platform_video_id = info.platformVideoId;
+    if (info.platformVideoUrl) body.platform_video_url = info.platformVideoUrl;
+
+    const res = await fetch(`${this.apiUrl}/v2/platform/register-content`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-JubJub-Platform-Key': platformKey,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (res.status === 409) {
+      // Duplicate — parse existing content_id from error response
+      const err = await res.json().catch(() => ({}));
+      const match = (err.detail || '').match(/content_id[=:]?\s*(\S+)/);
+      if (match) {
+        return { content_id: match[1].replace(/[).,]$/, '') };
+      }
+      throw new Error(`Content already registered: ${err.detail || res.status}`);
+    }
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Register content failed: ${res.status} ${text}`);
+    }
+
+    return res.json();
+  }
+
   // -- Public endpoints (no auth) --
 
   async getPlaybackInfo(contentId: string): Promise<ContentInfo> {

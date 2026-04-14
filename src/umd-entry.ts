@@ -1,6 +1,9 @@
 /**
- * UMD entry point — exposes the JubJub class directly as the global,
- * so `window.JubJub.play(...)` and `window.JubJub.connectBrowserWallet()`
- * work from a script tag without an extra `.JubJub` dereference.
+ * UMD entry — exports ONLY the JubJub class as the default.
+ * This makes `window.JubJub` the class itself (not a namespace wrapper),
+ * so `JubJub.init()` and `JubJub.play()` work directly from script tags.
+ *
+ * ESM consumers use index.ts which has full named exports.
  */
-export { JubJub as default } from './JubJub';
+import { JubJub } from './JubJub';
+export default JubJub;

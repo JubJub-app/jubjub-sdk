@@ -1,3 +1,20 @@
+export interface JubJubInitConfig {
+  platformKey: string;
+  apiUrl?: string;
+  network?: 'testnet' | 'mainnet';
+}
+
+export interface ContentRegistration {
+  creator: string;       // email or wallet address
+  title: string;
+  mediaUrl: string;
+  description?: string;
+  pricePerMinute?: number;
+  platformName?: string;
+  platformVideoId?: string;
+  platformVideoUrl?: string;
+}
+
 export interface JubJubOptions {
   contentId?: string;
   wallet?: WalletLike;

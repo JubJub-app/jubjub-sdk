@@ -1,28 +1,73 @@
 # JubJub SDK
 
-Add pay-per-view streaming payments to any video. Two lines of code.
+Add pay-per-view streaming payments to any video on your website.
 
 ## Quick Start
 
+1. Get your API key at [jubjubapp.com/developers](https://jubjubapp.com/developers)
+2. Add to your site template:
+
 ```html
-<video id="player" src="https://your-cdn.com/video.mp4"></video>
-<script src="https://cdn.jubjub.app/sdk.js"></script>
-<script>
-  JubJub.play('your-content-id', document.getElementById('player'));
-</script>
+<script src="https://jubjub-app.github.io/jubjub-sdk/dist/jubjub-sdk.umd.js"></script>
+<script>JubJub.init({ platformKey: 'pk_YOUR_KEY' });</script>
 ```
 
-That's it. When the viewer presses play:
-1. Wallet connects (MetaMask, Coinbase, or embedded)
-2. USDC approval (one-time, silent)
-3. Streaming payments flow at $0.005/min
-4. Creator earns in real-time on Base
+3. Add data attributes to your video elements:
+
+```html
+<video
+  src="https://your-cdn.com/video.mp4"
+  data-jubjub-creator="creator@email.com"
+  data-jubjub-title="Video Title"
+  controls>
+</video>
+```
+
+That's it. Videos with JubJub attributes get pay-per-view. Videos without them play free.
+
+When a viewer with MetaMask presses play:
+1. Content auto-registers (ownership token deploys on Base)
+2. Wallet connects (one-time per page)
+3. USDC approved (one-time per wallet)
+4. Streaming payments flow at $0.005/min
+5. Creator earns in real-time on-chain
+
+Viewers without a wallet extension see no prompts — videos play free.
 
 **JubJub handles the money stream, not the video stream.** Your video serves from your own CDN.
 
-## For Platforms
+## Data Attributes
 
-Register content from your backend, then embed the player:
+| Attribute | Required | Description |
+|---|---|---|
+| `data-jubjub-content-id` | Either this... | Pre-registered content ID (skips registration) |
+| `data-jubjub-creator` | ...or this | Creator email or wallet (triggers auto-registration) |
+| `data-jubjub-title` | No | Video title (defaults to page title) |
+| `data-jubjub-media-url` | No | Media URL for hashing (defaults to video src) |
+| `data-jubjub-price` | No | Price per minute override (default $0.005) |
+| `data-jubjub-disabled` | No | If present, SDK ignores this video |
+
+## Advanced: Manual Control
+
+```js
+// With an existing content_id:
+JubJub.play('cnt_abc123', document.getElementById('player'));
+
+// With inline registration:
+JubJub.play({
+  creator: 'creator@email.com',
+  title: 'My Video',
+  mediaUrl: 'https://cdn.com/video.mp4',
+}, document.getElementById('player'));
+
+// With a BYO wallet:
+const wallet = await JubJub.connectBrowserWallet();
+JubJub.play('cnt_abc123', video, { wallet });
+```
+
+## Server-side registration (optional)
+
+For tighter control, register from your backend:
 
 ```js
 // Server-side: register content

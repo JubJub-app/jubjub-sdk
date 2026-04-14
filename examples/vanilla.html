@@ -1,74 +1,44 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>JubJub SDK Demo</title>
   <style>
-    body { margin: 0; background: #0a0a0a; color: #fff; font-family: system-ui, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; }
-    h1 { font-size: 1.5rem; margin-bottom: 1rem; }
-    .video-container { position: relative; max-width: 720px; width: 100%; }
-    video { width: 100%; border-radius: 12px; }
-    #log { margin-top: 1rem; font-size: 12px; font-family: monospace; color: #888; max-height: 200px; overflow-y: auto; }
+    body { font-family: sans-serif; max-width: 800px; margin: 40px auto;
+           background: #111; color: white; padding: 0 20px; }
+    video { width: 100%; border-radius: 8px; margin: 20px 0; }
+    h1, h2 { text-align: center; }
+    .note { text-align: center; color: #888; font-size: 14px; }
   </style>
 </head>
 <body>
   <h1>JubJub Pay-Per-View Demo</h1>
-  <p style="font-size:11px;color:#666;margin-bottom:1rem;">Base Sepolia Testnet &mdash; no real money</p>
+  <p class="note">Base Sepolia Testnet</p>
 
-  <div class="video-container">
-    <!-- Video from YOUR CDN. JubJub handles payments, not video hosting. -->
-    <video
-      id="player"
-      src="https://www.w3schools.com/html/mov_bbb.mp4"
-      controls
-      playsinline
-    ></video>
-  </div>
+  <h2>Video 1 — Auto-registered</h2>
+  <video
+    src="https://www.w3schools.com/html/mov_bbb.mp4"
+    data-jubjub-creator="creator@example.com"
+    data-jubjub-title="Demo Video 1"
+    controls>
+  </video>
 
-  <div id="log"></div>
+  <h2>Video 2 — Pre-registered</h2>
+  <video
+    src="https://www.w3schools.com/html/mov_bbb.mp4"
+    data-jubjub-content-id="cnt_YOUR_CONTENT_ID"
+    controls>
+  </video>
 
-  <!-- Load JubJub SDK -->
+  <h2>Video 3 — Free (no JubJub attributes)</h2>
+  <video
+    src="https://www.w3schools.com/html/mov_bbb.mp4"
+    controls>
+  </video>
+
+  <!-- JubJub SDK — one script tag, auto-discovers all videos -->
   <script src="../dist/jubjub-sdk.umd.js"></script>
   <script>
-    // UMD exports a namespace; unwrap to get the class directly.
-    const JubJubSDK = window.JubJub.default || window.JubJub.JubJub || window.JubJub;
-
-    const log = document.getElementById('log');
-    function addLog(msg) {
-      const line = document.createElement('div');
-      line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
-      log.prepend(line);
-    }
-
-    // Replace with your content ID from POST /v2/platform/register-content
-    const contentId = 'cnt_YOUR_CONTENT_ID';
-
-    (async () => {
-      try {
-        // Connect MetaMask (or any injected wallet) — switches to Base Sepolia
-        addLog('Connecting wallet...');
-        const wallet = await JubJubSDK.connectBrowserWallet();
-        addLog(`Wallet connected: ${wallet.account.address.slice(0, 8)}...`);
-
-        // Start pay-per-view streaming — that's it
-        const sdk = JubJubSDK.play(contentId, document.getElementById('player'), {
-          wallet,
-          apiUrl: 'https://api.jubjubapp.com',
-          showCostOverlay: true,
-          overlayPosition: 'bottom-right',
-          onSessionStart: (sessionId) => addLog(`Session: ${sessionId}`),
-          onSessionEnd: (summary) => addLog(`Done: ${summary.seconds.toFixed(1)}s, $${summary.cost.toFixed(4)}`),
-          onError: (err) => addLog(`Error: ${err.message}`),
-        });
-
-        sdk.on('content:loaded', (info) => addLog(`Content: ${info.title} ($${info.price_per_minute_usdc}/min)`));
-        sdk.on('approved', () => addLog('USDC approved'));
-        sdk.on('ready', () => addLog('Streaming payments active'));
-      } catch (err) {
-        addLog(`Setup failed: ${err.message}`);
-      }
-    })();
+    JubJub.init({ platformKey: 'pk_YOUR_KEY' });
   </script>
 </body>
 </html>

@@ -3,16 +3,22 @@ import { resolve } from 'path';
 
 export default defineConfig({
   build: {
+    // Two separate builds: UMD (script tag) and ESM (bundlers).
+    // UMD uses umd-entry.ts which default-exports the JubJub class
+    // so window.JubJub IS the class, not a namespace wrapper.
     lib: {
-      entry: resolve(__dirname, 'src/index.ts'),
+      entry: resolve(__dirname, 'src/umd-entry.ts'),
       name: 'JubJub',
-      formats: ['umd', 'es'],
-      fileName: (format) => `jubjub-sdk.${format === 'umd' ? 'umd' : 'esm'}.js`,
+      formats: ['umd'],
+      fileName: () => 'jubjub-sdk.umd.js',
     },
     rollupOptions: {
       external: [],
+      output: {
+        exports: 'default',
+      },
     },
     minify: 'esbuild',
-    sourcemap: true,
+    sourcemap: false,
   },
 });
