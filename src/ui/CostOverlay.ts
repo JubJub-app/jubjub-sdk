@@ -13,19 +13,25 @@ export class CostOverlay {
   private container: HTMLDivElement;
   private costEl: HTMLSpanElement;
   private timeEl: HTMLSpanElement;
-  private video: HTMLVideoElement;
-  private observer: ResizeObserver | null = null;
 
   constructor(video: HTMLVideoElement, position: Position = 'bottom-right') {
-    this.video = video;
-
-    // Ensure the video's parent is positioned for absolute children
-    const parent = video.parentElement;
-    if (parent) {
-      const pos = getComputedStyle(parent).position;
-      if (pos === 'static') {
-        parent.style.position = 'relative';
-      }
+    // Ensure the video has a positioned wrapper so the overlay is
+    // scoped to THIS video, not the page body.
+    let wrapper = video.parentElement;
+    if (
+      !wrapper ||
+      wrapper === document.body ||
+      !wrapper.hasAttribute('data-jubjub-wrapper')
+    ) {
+      wrapper = document.createElement('div');
+      wrapper.setAttribute('data-jubjub-wrapper', 'true');
+      wrapper.style.cssText = 'position:relative;display:inline-block;width:100%;';
+      video.parentElement?.insertBefore(wrapper, video);
+      wrapper.appendChild(video);
+    }
+    // Guarantee positioning context
+    if (getComputedStyle(wrapper).position === 'static') {
+      wrapper.style.position = 'relative';
     }
 
     this.container = document.createElement('div');
@@ -63,7 +69,7 @@ export class CostOverlay {
     this.container.appendChild(this.timeEl);
     this.container.appendChild(brand);
 
-    (parent ?? document.body).appendChild(this.container);
+    wrapper.appendChild(this.container);
   }
 
   update(cost: CostInfo): void {
@@ -75,7 +81,6 @@ export class CostOverlay {
   }
 
   remove(): void {
-    this.observer?.disconnect();
     this.container.remove();
   }
 }

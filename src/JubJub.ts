@@ -40,6 +40,9 @@ const _processed = new WeakSet<HTMLVideoElement>();
 /** Debounce timer for MutationObserver. */
 let _observerTimer: ReturnType<typeof setTimeout> | null = null;
 
+/** Guard against init() being called twice. */
+let _initialized = false;
+
 // ---------------------------------------------------------------------------
 // Defaults
 // ---------------------------------------------------------------------------
@@ -97,6 +100,10 @@ export class JubJub extends EventEmitter {
     if (typeof (config as any).showCostOverlay === 'boolean') {
       _initShowOverlay = (config as any).showCostOverlay;
     }
+
+    // Guard against double-init (script loaded twice, SPA re-mount, etc.)
+    if (_initialized) return;
+    _initialized = true;
 
     // Auto-discover when DOM is ready
     if (typeof document === 'undefined') return;
@@ -200,50 +207,82 @@ export class JubJub extends EventEmitter {
 
   private static _autoDiscover(): void {
     const selector = 'video[data-jubjub-content-id], video[data-jubjub-creator]';
-    const videos = document.querySelectorAll<HTMLVideoElement>(selector);
-    videos.forEach((v) => JubJub._processVideo(v));
+    document.querySelectorAll<HTMLVideoElement>(selector)
+      .forEach((v) => JubJub._prepareVideo(v));
 
-    // Watch for dynamically added videos (SPA, lazy loading, etc.)
+    // Watch for dynamically added videos (SPA, lazy loading).
+    // Only react to added <video> elements, NOT to overlay/wrapper
+    // DOM changes (which would cause an infinite loop).
     if (typeof MutationObserver !== 'undefined') {
-      const observer = new MutationObserver(() => {
+      const observer = new MutationObserver((mutations) => {
+        let hasNewVideos = false;
+        for (const m of mutations) {
+          for (const node of m.addedNodes) {
+            if (node instanceof HTMLVideoElement) {
+              hasNewVideos = true;
+              break;
+            }
+            if (node instanceof HTMLElement && node.querySelector('video')) {
+              hasNewVideos = true;
+              break;
+            }
+          }
+          if (hasNewVideos) break;
+        }
+        if (!hasNewVideos) return;
+
         if (_observerTimer) clearTimeout(_observerTimer);
         _observerTimer = setTimeout(() => {
           document.querySelectorAll<HTMLVideoElement>(selector)
-            .forEach((v) => JubJub._processVideo(v));
+            .forEach((v) => JubJub._prepareVideo(v));
         }, 100);
       });
       observer.observe(document.body, { childList: true, subtree: true });
     }
   }
 
-  private static _processVideo(video: HTMLVideoElement): void {
+  /**
+   * Mark a video for JubJub payments but DON'T start the payment flow yet.
+   * Wait for the user to press play — that triggers wallet connect + session.
+   */
+  private static _prepareVideo(video: HTMLVideoElement): void {
     if (_processed.has(video)) return;
     if (video.dataset.jubjubDisabled != null) return;
     _processed.add(video);
 
     const contentId = video.dataset.jubjubContentId;
     const creator = video.dataset.jubjubCreator;
+    if (!contentId && !creator) return;
 
-    if (contentId) {
-      JubJub.play(contentId, video);
-    } else if (creator) {
-      const mediaUrl =
-        video.dataset.jubjubMediaUrl ||
-        video.src ||
-        video.querySelector('source')?.src ||
-        '';
-      JubJub.play(
-        {
-          creator,
-          title: video.dataset.jubjubTitle || document.title,
-          mediaUrl,
-          pricePerMinute: video.dataset.jubjubPrice
-            ? parseFloat(video.dataset.jubjubPrice)
-            : undefined,
-        },
-        video,
-      );
-    }
+    // Defer the payment flow to the video's play event.
+    // The user presses play → wallet connects → session starts → overlay appears.
+    // If they never press play, no prompts, no network calls.
+    const handler = () => {
+      video.removeEventListener('play', handler);
+
+      if (contentId) {
+        JubJub.play(contentId, video);
+      } else if (creator) {
+        const mediaUrl =
+          video.dataset.jubjubMediaUrl ||
+          video.src ||
+          video.querySelector('source')?.src ||
+          '';
+        JubJub.play(
+          {
+            creator,
+            title: video.dataset.jubjubTitle || document.title,
+            mediaUrl,
+            pricePerMinute: video.dataset.jubjubPrice
+              ? parseFloat(video.dataset.jubjubPrice)
+              : undefined,
+          },
+          video,
+        );
+      }
+    };
+
+    video.addEventListener('play', handler);
   }
 
   // =========================================================================
