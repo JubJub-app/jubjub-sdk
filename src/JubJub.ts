@@ -67,6 +67,10 @@ export class JubJub extends EventEmitter {
     options: JubJubOptions = {},
   ): JubJub {
     const sdk = new JubJub({ ...options, contentId });
+    if (!contentId) {
+      console.warn('[JubJub] No content ID provided — video will play without payments.');
+      return sdk;
+    }
     sdk.attach(contentId, video).catch((err) => {
       sdk.emit('error', err);
       console.error('[JubJub]', err);
@@ -80,9 +84,25 @@ export class JubJub extends EventEmitter {
   async attach(contentId: string, video: HTMLVideoElement): Promise<void> {
     this.video = video;
 
+    if (!contentId) {
+      const err = new Error('No content ID — video plays without payments.');
+      console.warn('[JubJub]', err.message);
+      this.emit('error', err);
+      return;
+    }
+
     try {
       // 1. Fetch content + chain config
-      this.contentInfo = await this.api.getPlaybackInfo(contentId);
+      try {
+        this.contentInfo = await this.api.getPlaybackInfo(contentId);
+      } catch (fetchErr: any) {
+        const msg = fetchErr?.message?.includes('404')
+          ? `Content '${contentId}' not found — video plays without payments.`
+          : `Failed to load content info — video plays without payments. (${fetchErr?.message})`;
+        console.warn('[JubJub]', msg);
+        this.emit('error', new Error(msg));
+        return;
+      }
       this.emit('content:loaded', this.contentInfo);
 
       // 2. Connect wallet
