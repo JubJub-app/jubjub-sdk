@@ -2,6 +2,13 @@ export interface JubJubInitConfig {
   platformKey: string;
   apiUrl?: string;
   network?: 'testnet' | 'mainnet';
+  /**
+   * Optional EIP-1193 compatible provider. When supplied, it is used
+   * instead of `window.ethereum` for all wallet operations — required
+   * inside a Farcaster Mini App (pass `sdk.wallet.getEthereumProvider()`)
+   * or any context where the injected wallet lives outside `window`.
+   */
+  provider?: any;
 }
 
 export interface ContentRegistration {

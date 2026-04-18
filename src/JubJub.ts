@@ -43,6 +43,14 @@ let _observerTimer: ReturnType<typeof setTimeout> | null = null;
 /** Guard against init() being called twice. */
 let _initialized = false;
 
+/**
+ * Optional EIP-1193 provider injected via JubJub.init({ provider }).
+ * When set, takes precedence over window.ethereum. Required for
+ * Farcaster Mini Apps (sdk.wallet.getEthereumProvider()) and any
+ * host whose wallet provider isn't exposed on window.
+ */
+let _injectedProvider: any | null = null;
+
 // ---------------------------------------------------------------------------
 // Defaults
 // ---------------------------------------------------------------------------
@@ -144,6 +152,7 @@ export class JubJub extends EventEmitter {
     _platformKey = config.platformKey;
     if (config.apiUrl) _initApiUrl = config.apiUrl;
     if (config.network) _initNetwork = config.network;
+    if (config.provider) _injectedProvider = config.provider;
     if (typeof (config as any).showCostOverlay === 'boolean') {
       _initShowOverlay = (config as any).showCostOverlay;
     }
@@ -207,10 +216,12 @@ export class JubJub extends EventEmitter {
    * Connect a browser-injected wallet (MetaMask, Coinbase Wallet, etc.).
    */
   static async connectBrowserWallet(): Promise<WalletLike> {
-    const ethereum = (window as any).ethereum;
+    const ethereum = _injectedProvider ?? (window as any).ethereum;
     if (!ethereum) {
       throw new Error(
-        'No browser wallet detected. Install MetaMask or another wallet extension.',
+        'No browser wallet detected. Install MetaMask, or pass an ' +
+          'EIP-1193 provider via JubJub.init({ provider }) — required ' +
+          'inside Farcaster Mini Apps and similar embedded contexts.',
       );
     }
 
@@ -386,7 +397,7 @@ export class JubJub extends EventEmitter {
     }
 
     // Try auto-connecting browser wallet (only once per page)
-    if (!(window as any).ethereum) {
+    if (!_injectedProvider && !(window as any).ethereum) {
       throw new Error('no-wallet');
     }
 
