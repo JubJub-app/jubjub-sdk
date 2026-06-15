@@ -1,5 +1,5 @@
 import { createPublicClient, http, type Address } from 'viem';
-import { baseSepolia } from 'viem/chains';
+import { chainForNetwork, type NetworkFlag } from '../chains';
 import type { Wallet } from './Wallet';
 
 const ERC20_ABI = [
@@ -38,13 +38,31 @@ export class Approval {
   constructor(
     wallet: Wallet,
     chainConfig: { usdc_address: string; payment_router: string; chain_id: number },
+    network: NetworkFlag,
   ) {
     this.wallet = wallet;
     this.usdc = chainConfig.usdc_address as Address;
     this.router = chainConfig.payment_router as Address;
+
+    const chain = chainForNetwork(network);
+
+    // Safety check: the chain the SDK is configured for MUST match the
+    // chain the content actually lives on (as reported by the backend).
+    // A mismatch means we'd read allowances / submit approvals against
+    // the wrong network — fail loud instead of silently misbehaving.
+    if (chainConfig.chain_id !== chain.chainId) {
+      const otherNetwork: NetworkFlag = network === 'mainnet' ? 'testnet' : 'mainnet';
+      throw new Error(
+        `SDK network '${network}' (chainId ${chain.chainId}) does not match ` +
+          `content chain_id ${chainConfig.chain_id} — the content lives on a ` +
+          `different chain than the SDK is configured for. Initialise JubJub ` +
+          `with the matching network (e.g. JubJub.init({ network: '${otherNetwork}' })).`,
+      );
+    }
+
     this.publicClient = createPublicClient({
-      chain: baseSepolia,
-      transport: http('https://sepolia.base.org'),
+      chain: chain.viemChain,
+      transport: http(chain.rpcUrl),
     });
   }
 

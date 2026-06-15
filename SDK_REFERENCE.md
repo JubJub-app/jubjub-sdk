@@ -1,8 +1,8 @@
 # JubJub SDK Reference
 
-**Version:** 0.1.0
-**Chain:** Base (Coinbase L2) — Sepolia testnet
-**Status:** Functional on testnet. Mainnet pending security audit.
+**Version:** 1.0.0
+**Chain:** Base (Coinbase L2) — `network: 'testnet'` → Base Sepolia (default), `network: 'mainnet'` → Base mainnet
+**Status:** Live on Base mainnet. Default network stays `'testnet'`; opt into mainnet with `network: 'mainnet'`.
 
 ---
 
@@ -170,6 +170,12 @@ Required: `media_url` and at least one of `creator_email` or `creator_wallet`.
 }
 ```
 
+> The `chain_id` / `chain_name` / addresses above are a **testnet**
+> example. On mainnet content the backend returns `chain_id: 8453`
+> (`base`) with the corresponding Base mainnet addresses. The SDK
+> verifies this `chain_id` matches its configured `network` and throws
+> on mismatch.
+
 ---
 
 ## Creator identity resolution
@@ -233,7 +239,12 @@ Viewer USDC
 
 ### Smart contracts (Base Sepolia testnet)
 
-| Contract | Address |
+These are the **testnet** addresses. The SDK never hardcodes them — the
+backend playback-info response supplies `payment_router`, `usdc_address`,
+and `chain_id` per content, so on `network: 'mainnet'` (chain `8453`) the
+SDK uses the corresponding Base mainnet addresses returned by the backend.
+
+| Contract | Address (Base Sepolia testnet) |
 |---|---|
 | JubJubPaymentRouter | `0xf5207b827f90b15da403c45A339BDC4a87BC258E` |
 | USDC | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` |
@@ -249,7 +260,7 @@ Viewer USDC
 const sdk = new JubJub({
   wallet: myWalletClient,          // BYO viem WalletClient, or null for prompt
   apiUrl: 'https://api.jubjubapp.com',
-  network: 'testnet',             // 'testnet' or 'mainnet'
+  network: 'testnet',             // 'testnet' (Base Sepolia, default) or 'mainnet' (Base) — now fully wired
   showCostOverlay: true,           // default true
   overlayPosition: 'bottom-right', // 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left'
   onCostUpdate: (cost, seconds) => {},
@@ -293,7 +304,7 @@ sdk.on('ready', () => {});
 | Method | Returns | Description |
 |---|---|---|
 | `JubJub.play(contentId, video, options?)` | `JubJub` | Static shorthand. Errors emitted, not thrown. |
-| `JubJub.connectBrowserWallet()` | `Promise<WalletLike>` | Connect MetaMask/Coinbase/injected wallet. Switches to Base Sepolia. |
+| `JubJub.connectBrowserWallet(network?)` | `Promise<WalletLike>` | Connect MetaMask/Coinbase/injected wallet. Switches to the active network's chain — Base Sepolia on `'testnet'` (default), Base mainnet on `'mainnet'`. |
 | `sdk.attach(contentId, video)` | `Promise<void>` | Full setup: wallet, approve, session, tracking. |
 | `sdk.disconnect()` | `Promise<SessionSummary>` | Close session, return final cost. |
 | `sdk.getCost()` | `CostInfo` | Current `{ usdc, seconds, formatted }`. |
@@ -360,7 +371,11 @@ The auth chain in `verify_token_cookie` checks in order: platform key -> agent k
 
 ## Current status (April 2026)
 
-**Working on Base Sepolia testnet:**
+The backend is live on Base mainnet. The SDK defaults to `network:
+'testnet'` (Base Sepolia) and runs against mainnet when initialised with
+`network: 'mainnet'`.
+
+**Working (testnet and mainnet):**
 - Platform content registration with ownership token deployment
 - Streaming payment sessions with per-second settlement
 - Brand token auto-minting on first publish
@@ -371,7 +386,6 @@ The auth chain in `verify_token_cookie` checks in order: platform key -> agent k
 - Content hash dedup for provenance
 
 **Pending:**
-- Mainnet deployment (pending security audit)
 - Privy zero-config wallet (no browser extension needed)
 - CDN hosting for SDK bundle (`cdn.jubjub.app/sdk.js`)
 - npm publish (`@jubjub/sdk`)

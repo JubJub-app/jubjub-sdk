@@ -1,5 +1,5 @@
 import { createWalletClient, custom } from 'viem';
-import { baseSepolia } from 'viem/chains';
+import { chainForNetwork, type NetworkFlag } from './chains';
 import { EventEmitter } from './EventEmitter';
 import { ApiClient } from './api/ApiClient';
 import { Wallet } from './core/Wallet';
@@ -214,8 +214,12 @@ export class JubJub extends EventEmitter {
 
   /**
    * Connect a browser-injected wallet (MetaMask, Coinbase Wallet, etc.).
+   *
+   * The target chain is resolved from the active network flag (defaults
+   * to the value passed to JubJub.init(), i.e. 'testnet' unless the
+   * consumer explicitly opted into 'mainnet').
    */
-  static async connectBrowserWallet(): Promise<WalletLike> {
+  static async connectBrowserWallet(network: NetworkFlag = _initNetwork): Promise<WalletLike> {
     const ethereum = _injectedProvider ?? (window as any).ethereum;
     if (!ethereum) {
       throw new Error(
@@ -224,6 +228,8 @@ export class JubJub extends EventEmitter {
           'inside Farcaster Mini Apps and similar embedded contexts.',
       );
     }
+
+    const chain = chainForNetwork(network);
 
     const accounts: string[] = await ethereum.request({
       method: 'eth_requestAccounts',
@@ -235,18 +241,18 @@ export class JubJub extends EventEmitter {
     try {
       await ethereum.request({
         method: 'wallet_switchEthereumChain',
-        params: [{ chainId: '0x14A34' }],
+        params: [{ chainId: chain.chainIdHex }],
       });
     } catch (switchError: any) {
       if (switchError.code === 4902) {
         await ethereum.request({
           method: 'wallet_addEthereumChain',
           params: [{
-            chainId: '0x14A34',
-            chainName: 'Base Sepolia',
+            chainId: chain.chainIdHex,
+            chainName: chain.label,
             nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
-            rpcUrls: ['https://sepolia.base.org'],
-            blockExplorerUrls: ['https://sepolia.basescan.org'],
+            rpcUrls: [chain.rpcUrl],
+            blockExplorerUrls: [chain.explorer],
           }],
         });
       }
@@ -254,7 +260,7 @@ export class JubJub extends EventEmitter {
 
     const client = createWalletClient({
       account: address,
-      chain: baseSepolia,
+      chain: chain.viemChain,
       transport: custom(ethereum),
     });
 
@@ -385,6 +391,15 @@ export class JubJub extends EventEmitter {
   // Auto wallet (private, shared across all videos)
   // =========================================================================
 
+  /**
+   * The active network for this instance — an explicit per-call
+   * `options.network` wins, otherwise the value set at init time.
+   * Source of truth for every chain decision made by this instance.
+   */
+  private _activeNetwork(): NetworkFlag {
+    return this.options.network ?? _initNetwork;
+  }
+
   private async _ensureWallet(): Promise<string> {
     // Already have a wallet from options or shared cache
     const existing = this.wallet.getAddress();
@@ -402,7 +417,7 @@ export class JubJub extends EventEmitter {
     }
 
     if (!_walletConnecting) {
-      _walletConnecting = JubJub.connectBrowserWallet().catch(() => null);
+      _walletConnecting = JubJub.connectBrowserWallet(this._activeNetwork()).catch(() => null);
     }
     const wallet = await _walletConnecting;
     if (!wallet) throw new Error('no-wallet');
@@ -491,11 +506,15 @@ export class JubJub extends EventEmitter {
 
       // 4. Approve USDC
       console.log('[JubJub] Step 4: Checking USDC approval...');
-      this.approval = new Approval(this.wallet, {
-        usdc_address: this.contentInfo.usdc_address,
-        payment_router: this.contentInfo.payment_router,
-        chain_id: this.contentInfo.chain_id,
-      });
+      this.approval = new Approval(
+        this.wallet,
+        {
+          usdc_address: this.contentInfo.usdc_address,
+          payment_router: this.contentInfo.payment_router,
+          chain_id: this.contentInfo.chain_id,
+        },
+        this._activeNetwork(),
+      );
       const didApprove = await this.approval.ensureApproved();
       console.log('[JubJub] Step 4 done:', didApprove ? 'approved' : 'already approved');
       if (didApprove) this.emit('approved', address);
