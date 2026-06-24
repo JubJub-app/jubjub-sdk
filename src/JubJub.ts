@@ -24,7 +24,7 @@ const DEFAULT_API_URL = 'https://api.jubjubapp.com';
 // ---------------------------------------------------------------------------
 let _platformKey: string | null = null;
 let _initApiUrl: string = DEFAULT_API_URL;
-let _initNetwork: 'testnet' | 'mainnet' = 'testnet';
+let _initNetwork: 'testnet' | 'mainnet' = 'mainnet';
 let _initShowOverlay = true;
 
 /** Content registration cache: mediaUrl → content_id */
@@ -60,7 +60,7 @@ const DEFAULTS: Required<
   contentId: undefined,
   wallet: undefined,
   apiUrl: DEFAULT_API_URL,
-  network: 'testnet',
+  network: 'mainnet',
   showCostOverlay: true,
   overlayPosition: 'bottom-right',
 };
@@ -216,8 +216,8 @@ export class JubJub extends EventEmitter {
    * Connect a browser-injected wallet (MetaMask, Coinbase Wallet, etc.).
    *
    * The target chain is resolved from the active network flag (defaults
-   * to the value passed to JubJub.init(), i.e. 'testnet' unless the
-   * consumer explicitly opted into 'mainnet').
+   * to the value passed to JubJub.init(), i.e. 'mainnet' unless the
+   * consumer explicitly opted into 'testnet').
    */
   static async connectBrowserWallet(network: NetworkFlag = _initNetwork): Promise<WalletLike> {
     const ethereum = _injectedProvider ?? (window as any).ethereum;
