@@ -118,6 +118,8 @@ function _createLoader(video: HTMLVideoElement): { remove: () => void } {
 function _createPaymentGate(
   video: HTMLVideoElement,
   onRetry: () => void,
+  titleText?: string,
+  subText?: string,
 ): { remove: () => void } {
   const el = document.createElement('div');
   el.setAttribute('data-jubjub-gate', 'true');
@@ -129,12 +131,13 @@ function _createPaymentGate(
 
   const title = document.createElement('div');
   title.style.cssText = 'font-size:15px;font-weight:600;max-width:340px;line-height:1.4;';
-  title.textContent = 'Payment approval required to watch';
+  title.textContent = titleText || 'Payment approval required to watch';
   el.appendChild(title);
 
   const sub = document.createElement('div');
   sub.style.cssText = 'font-size:13px;opacity:0.85;max-width:340px;line-height:1.4;';
-  sub.textContent = 'Approve the USDC payment in your wallet to start streaming.';
+  sub.textContent =
+    subText || 'Approve the USDC payment in your wallet to start streaming.';
   el.appendChild(sub);
 
   const btn = document.createElement('button');
@@ -423,6 +426,8 @@ export class JubJub extends EventEmitter {
       const setup = async () => {
         let sdk: JubJub | undefined;
         let gated = false;
+        let gateTitle: string | undefined;
+        let gateSub: string | undefined;
         try {
           if (contentId) {
             sdk = JubJub.play(contentId, video);
@@ -444,31 +449,49 @@ export class JubJub extends EventEmitter {
               video,
             );
           }
-          // Resolve on success ('ready'), payment gate ('payment:required'),
-          // generic failure ('error'), or a safety timeout.
+          // Decide exactly once. 'ready' → play (payment secured). Any
+          // pre-payment failure emits 'payment:required' → GATE. A benign
+          // post-payment 'error' (after the on-chain session exists) →
+          // resume. The 15s safety timeout means setup never confirmed →
+          // GATE (can't confirm payment).
           await new Promise<void>((resolve) => {
-            sdk!.on('ready', () => resolve());
-            sdk!.on('payment:required', () => { gated = true; resolve(); });
-            sdk!.on('error', () => resolve());
-            setTimeout(resolve, 15_000);
+            let settled = false;
+            const done = (g: boolean) => {
+              if (settled) return;
+              settled = true;
+              gated = g;
+              resolve();
+            };
+            sdk!.on('ready', () => done(false));
+            sdk!.on('payment:required', (e: any) => {
+              gateTitle = e?.message || gateTitle;
+              gateSub = e?.sub || gateSub;
+              done(true);
+            });
+            sdk!.on('error', () => done(false));
+            setTimeout(() => {
+              gateTitle = 'Payment setup timed out';
+              gateSub = 'Setting up payment took too long. Please try again.';
+              done(true);
+            }, 15_000);
           });
         } catch {
-          // Setup threw before emitting — treated as non-gated (resumes).
+          // Setup threw before emitting — FAIL CLOSED rather than free-play.
+          gated = true;
         }
         loader.remove();
 
         if (gated) {
-          // FAIL CLOSED: approval was not granted. Keep the video paused,
-          // show a retry gate, and re-arm play→retry. Do NOT call play().
-          console.warn('[JubJub] Payment not approved — video gated (no free play).');
-          currentGate = _createPaymentGate(video, run);
+          // FAIL CLOSED: payment was not secured. Keep the video paused, show
+          // the retry gate, and re-arm play→retry. Do NOT call play().
+          console.warn('[JubJub] Payment not secured — video gated (no free play).');
+          currentGate = _createPaymentGate(video, run, gateTitle, gateSub);
           armPlay();
           return;
         }
 
-        // Legitimate paths (already-approved / newly-approved → 'ready') and
-        // the other not-yet-gated setup failures (no content / no wallet /
-        // viewer-session / streaming-session) resume playback as before.
+        // Payment secured ('ready'), or a benign post-payment hiccup ('error'
+        // raised after the on-chain session already exists) — resume.
         video.play().catch(() => {});
       };
 
@@ -532,23 +555,51 @@ export class JubJub extends EventEmitter {
     info: ContentRegistration,
     video: HTMLVideoElement,
   ): Promise<void> {
-    if (!_platformKey) {
-      throw new Error('Call JubJub.init({ platformKey }) before using auto-registration.');
-    }
+    let contentId: string;
+    try {
+      if (!_platformKey) {
+        throw new Error('Call JubJub.init({ platformKey }) before using auto-registration.');
+      }
 
-    const cached = _registrationCache.get(info.mediaUrl);
-    if (cached) {
-      console.log('[JubJub] Using cached content_id:', cached);
-      return this.attach(cached, video);
+      const cached = _registrationCache.get(info.mediaUrl);
+      if (cached) {
+        console.log('[JubJub] Using cached content_id:', cached);
+        contentId = cached;
+      } else {
+        console.log('[JubJub] Registering content...', { creator: info.creator, title: info.title });
+        const result = await this.api.registerContent(_platformKey, info);
+        contentId = result.content_id;
+        console.log('[JubJub] Registered:', contentId, result.duplicate ? '(duplicate)' : '(new)');
+        _registrationCache.set(info.mediaUrl, contentId);
+      }
+    } catch (regErr) {
+      // Registration failed for a JubJub-tagged (creator) video → FAIL CLOSED:
+      // gate rather than free-play. (attach() handles its own gating below.)
+      this._gatePayment(
+        'Payment service unavailable',
+        "Couldn't register this video for payment. Please try again.",
+        regErr,
+      );
+      return;
     }
-
-    console.log('[JubJub] Registering content...', { creator: info.creator, title: info.title });
-    const result = await this.api.registerContent(_platformKey, info);
-    const contentId = result.content_id;
-    console.log('[JubJub] Registered:', contentId, result.duplicate ? '(duplicate)' : '(new)');
-    _registrationCache.set(info.mediaUrl, contentId);
 
     return this.attach(contentId, video);
+  }
+
+  /**
+   * Fail-closed gate. Emits a 'payment:required' signal carrying a user-facing
+   * title + sub-message. The play harness keeps the video paused, shows the
+   * retry gate, and never falls through to free playback. Used for every
+   * pre-payment failure (load/price, wallet, viewer-session, approval,
+   * streaming-session) so no JubJub-tagged video plays without secured payment.
+   */
+  private _gatePayment(title: string, sub: string, cause?: unknown): void {
+    const detail =
+      cause instanceof Error ? cause.message : cause != null ? String(cause) : '';
+    console.warn(`[JubJub] Gating playback (no free play): ${title}`, detail);
+    const err = new Error(title) as Error & { sub?: string };
+    err.sub = sub;
+    this.emit('payment:required', err);
   }
 
   async attach(contentId: string, video: HTMLVideoElement): Promise<void> {
@@ -568,11 +619,22 @@ export class JubJub extends EventEmitter {
       try {
         this.contentInfo = await this.api.getPlaybackInfo(contentId);
       } catch (fetchErr: any) {
-        const msg = fetchErr?.message?.includes('404')
-          ? `Content '${contentId}' not found — video plays free.`
-          : `Failed to load content info — video plays free. (${fetchErr?.message})`;
-        console.warn('[JubJub]', msg);
-        this.emit('error', new Error(msg));
+        // A: could not load payment details → FAIL CLOSED (gate, no free play).
+        this._gatePayment(
+          'Unable to load payment details',
+          "We couldn't load this video's payment info. Please try again.",
+          fetchErr,
+        );
+        return;
+      }
+      // A: missing / invalid price is a misconfig — never free-play around it.
+      const price = Number(this.contentInfo.price_per_minute_usdc);
+      if (!Number.isFinite(price) || price <= 0) {
+        this._gatePayment(
+          'Unable to load payment details',
+          'This video is missing a valid price. Please try again.',
+          new Error(`invalid price_per_minute_usdc: ${this.contentInfo.price_per_minute_usdc}`),
+        );
         return;
       }
       console.log('[JubJub] Step 1 done:', this.contentInfo.title, `$${this.contentInfo.price_per_minute_usdc}/min`);
@@ -583,8 +645,13 @@ export class JubJub extends EventEmitter {
       let address: string;
       try {
         address = await this._ensureWallet();
-      } catch {
-        console.log('[JubJub] No wallet detected. Video plays free.');
+      } catch (walletErr) {
+        // B: no wallet / connect failed → FAIL CLOSED (gate, no free play).
+        this._gatePayment(
+          'Connect a wallet to watch',
+          'A wallet is required to pay for streaming. Connect one and retry.',
+          walletErr,
+        );
         return;
       }
       console.log('[JubJub] Step 2 done: wallet', address.slice(0, 10) + '...');
@@ -592,36 +659,44 @@ export class JubJub extends EventEmitter {
 
       // 3. Create viewer session
       console.log('[JubJub] Step 3: Creating viewer session...');
-      await this.api.createViewerSession(contentId, address);
+      try {
+        await this.api.createViewerSession(contentId, address);
+      } catch (viewerErr) {
+        // C: viewer-session creation failed → FAIL CLOSED (gate).
+        this._gatePayment(
+          'Payment service unavailable',
+          "Couldn't start a payment session. Please try again.",
+          viewerErr,
+        );
+        return;
+      }
       console.log('[JubJub] Step 3 done');
 
       // 4. Approve USDC
       console.log('[JubJub] Step 4: Checking USDC approval...');
-      this.approval = new Approval(
-        this.wallet,
-        {
-          usdc_address: this.contentInfo.usdc_address,
-          payment_router: this.contentInfo.payment_router,
-          chain_id: this.contentInfo.chain_id,
-          price_per_minute_usdc: this.contentInfo.price_per_minute_usdc,
-        },
-      );
       let didApprove: boolean;
       try {
+        // Construct inside the try so an Approval ctor throw (e.g. unsupported
+        // chain_id / chain-RPC mismatch) also gates rather than free-playing.
+        this.approval = new Approval(
+          this.wallet,
+          {
+            usdc_address: this.contentInfo.usdc_address,
+            payment_router: this.contentInfo.payment_router,
+            chain_id: this.contentInfo.chain_id,
+            price_per_minute_usdc: this.contentInfo.price_per_minute_usdc,
+          },
+        );
         didApprove = await this.approval.ensureApproved();
       } catch (approvalErr) {
-        // FAIL CLOSED: the USDC approval was rejected by the user or the
-        // approve tx failed (or the allowance could not be verified). Do NOT
-        // proceed to streaming and do NOT fall through to free play — emit a
-        // distinct 'payment:required' signal that the play harness uses to
-        // keep the video gated with a retry affordance.
-        const error =
-          approvalErr instanceof Error ? approvalErr : new Error(String(approvalErr));
-        console.warn(
-          '[JubJub] USDC approval not granted — gating playback (no free play).',
-          error.message,
+        // FAIL CLOSED: approval rejected by the user, approve tx failed, the
+        // allowance could not be verified, or the chain/RPC was unusable. Do
+        // NOT proceed and do NOT fall through to free play.
+        this._gatePayment(
+          'Payment approval required to watch',
+          'Approve the USDC payment in your wallet to start streaming.',
+          approvalErr,
         );
-        this.emit('payment:required', error);
         return;
       }
       console.log('[JubJub] Step 4 done:', didApprove ? 'approved' : 'already approved');
@@ -629,7 +704,18 @@ export class JubJub extends EventEmitter {
 
       // 5. Create streaming session
       console.log('[JubJub] Step 5: Creating streaming session...');
-      this.session = await Session.create(contentId, address, this.api);
+      try {
+        this.session = await Session.create(contentId, address, this.api);
+      } catch (streamErr) {
+        // D: streaming-session create failed (incl. on-chain createSession
+        // revert) → FAIL CLOSED (gate). Payment is not yet secured here.
+        this._gatePayment(
+          'Payment service unavailable',
+          "Couldn't start the streaming payment. Please try again.",
+          streamErr,
+        );
+        return;
+      }
       console.log('[JubJub] Step 5 done: session', this.session.id);
       this.emit('session:start', this.session.id);
 
