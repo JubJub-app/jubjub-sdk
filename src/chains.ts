@@ -63,3 +63,21 @@ const CHAINS: Record<ChainKey, SdkChain> = {
 export function chainForNetwork(network: NetworkFlag): SdkChain {
   return CHAINS[NETWORK_TO_KEY[network]];
 }
+
+/**
+ * Reverse lookup: resolve the chain config from a numeric chain_id.
+ *
+ * The backend playback-info `chain_id` is the single source of truth for
+ * which chain a piece of content lives on. Resolving the RPC + viem chain
+ * from this same value (rather than from the SDK network flag) guarantees
+ * the RPC can never diverge from the USDC/router addresses, which also
+ * travel in the playback-info response.
+ */
+const CHAIN_BY_ID: Record<number, SdkChain> = {
+  8453: CHAINS.base,
+  84532: CHAINS['base-sepolia'],
+};
+
+export function chainForChainId(id: number): SdkChain | undefined {
+  return CHAIN_BY_ID[id];
+}
