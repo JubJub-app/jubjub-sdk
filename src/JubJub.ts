@@ -512,6 +512,7 @@ export class JubJub extends EventEmitter {
           usdc_address: this.contentInfo.usdc_address,
           payment_router: this.contentInfo.payment_router,
           chain_id: this.contentInfo.chain_id,
+          price_per_minute_usdc: this.contentInfo.price_per_minute_usdc,
         },
       );
       const didApprove = await this.approval.ensureApproved();
