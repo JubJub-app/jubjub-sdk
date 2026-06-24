@@ -513,7 +513,6 @@ export class JubJub extends EventEmitter {
           payment_router: this.contentInfo.payment_router,
           chain_id: this.contentInfo.chain_id,
         },
-        this._activeNetwork(),
       );
       const didApprove = await this.approval.ensureApproved();
       console.log('[JubJub] Step 4 done:', didApprove ? 'approved' : 'already approved');
