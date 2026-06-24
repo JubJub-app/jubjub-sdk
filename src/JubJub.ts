@@ -112,6 +112,63 @@ function _createLoader(video: HTMLVideoElement): { remove: () => void } {
 }
 
 // ---------------------------------------------------------------------------
+// Payment-required gate shown when approval is rejected / not granted.
+// Keeps the video covered (it stays paused) and offers a retry affordance.
+// ---------------------------------------------------------------------------
+function _createPaymentGate(
+  video: HTMLVideoElement,
+  onRetry: () => void,
+): { remove: () => void } {
+  const el = document.createElement('div');
+  el.setAttribute('data-jubjub-gate', 'true');
+  el.style.cssText =
+    'position:absolute;inset:0;z-index:1002;display:flex;flex-direction:column;' +
+    'align-items:center;justify-content:center;gap:10px;text-align:center;' +
+    'background:rgba(0,0,0,0.82);color:#fff;padding:16px;' +
+    'font-family:system-ui,sans-serif;';
+
+  const title = document.createElement('div');
+  title.style.cssText = 'font-size:15px;font-weight:600;max-width:340px;line-height:1.4;';
+  title.textContent = 'Payment approval required to watch';
+  el.appendChild(title);
+
+  const sub = document.createElement('div');
+  sub.style.cssText = 'font-size:13px;opacity:0.85;max-width:340px;line-height:1.4;';
+  sub.textContent = 'Approve the USDC payment in your wallet to start streaming.';
+  el.appendChild(sub);
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.textContent = 'Retry payment';
+  btn.style.cssText =
+    'cursor:pointer;border:0;border-radius:8px;padding:10px 18px;margin-top:4px;' +
+    'font-size:14px;font-weight:600;background:#fff;color:#000;font-family:inherit;';
+  el.appendChild(btn);
+
+  // Insert into a positioned wrapper (mirrors _createLoader).
+  let wrapper = video.parentElement;
+  if (!wrapper || wrapper === document.body) {
+    wrapper = document.createElement('div');
+    wrapper.style.cssText = 'position:relative;display:inline-block;width:100%;';
+    video.parentElement?.insertBefore(wrapper, video);
+    wrapper.appendChild(video);
+  }
+  if (getComputedStyle(wrapper).position === 'static') {
+    wrapper.style.position = 'relative';
+  }
+  wrapper.appendChild(el);
+
+  const remove = () => el.remove();
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onRetry();
+  });
+
+  return { remove };
+}
+
+// ---------------------------------------------------------------------------
 // JubJub class
 // ---------------------------------------------------------------------------
 export class JubJub extends EventEmitter {
@@ -334,18 +391,38 @@ export class JubJub extends EventEmitter {
       src: (video.src || '').slice(0, 60),
     });
 
-    // Defer the payment flow to the video's play event.
-    // Pause immediately so no free seconds leak, run setup, then resume.
-    const handler = () => {
-      video.removeEventListener('play', handler);
+    // Defer the payment flow to the video's play event. Pause immediately so
+    // no free seconds leak, run setup, then resume ONLY if payment is in
+    // place. On approval rejection we FAIL CLOSED: keep the video paused and
+    // show a retry gate instead of falling through to free playback.
+    let currentGate: { remove: () => void } | null = null;
+    let armedPlayHandler: (() => void) | null = null;
+
+    const disarmPlay = () => {
+      if (armedPlayHandler) {
+        video.removeEventListener('play', armedPlayHandler);
+        armedPlayHandler = null;
+      }
+    };
+    const armPlay = () => {
+      disarmPlay();
+      armedPlayHandler = () => { disarmPlay(); run(); };
+      video.addEventListener('play', armedPlayHandler);
+    };
+
+    const run = () => {
+      // Ensure our own video.play() below can't re-enter this handler, and
+      // clear any prior gate (retry via the native play button).
+      disarmPlay();
+      if (currentGate) { currentGate.remove(); currentGate = null; }
       video.pause();
       console.log('[JubJub] Play event fired — paused, starting payment setup');
 
-      // Loading indicator
       const loader = _createLoader(video);
 
-      const setupAndResume = async () => {
-        let sdk: JubJub;
+      const setup = async () => {
+        let sdk: JubJub | undefined;
+        let gated = false;
         try {
           if (contentId) {
             sdk = JubJub.play(contentId, video);
@@ -367,24 +444,38 @@ export class JubJub extends EventEmitter {
               video,
             );
           }
-          // Wait for the 'ready' event (session active) or 'error'
+          // Resolve on success ('ready'), payment gate ('payment:required'),
+          // generic failure ('error'), or a safety timeout.
           await new Promise<void>((resolve) => {
-            sdk.on('ready', () => resolve());
-            sdk.on('error', () => resolve());
-            // Safety timeout — don't block forever
+            sdk!.on('ready', () => resolve());
+            sdk!.on('payment:required', () => { gated = true; resolve(); });
+            sdk!.on('error', () => resolve());
             setTimeout(resolve, 15_000);
           });
         } catch {
-          // Setup failed — play free
+          // Setup threw before emitting — treated as non-gated (resumes).
         }
         loader.remove();
+
+        if (gated) {
+          // FAIL CLOSED: approval was not granted. Keep the video paused,
+          // show a retry gate, and re-arm play→retry. Do NOT call play().
+          console.warn('[JubJub] Payment not approved — video gated (no free play).');
+          currentGate = _createPaymentGate(video, run);
+          armPlay();
+          return;
+        }
+
+        // Legitimate paths (already-approved / newly-approved → 'ready') and
+        // the other not-yet-gated setup failures (no content / no wallet /
+        // viewer-session / streaming-session) resume playback as before.
         video.play().catch(() => {});
       };
 
-      setupAndResume();
+      setup();
     };
 
-    video.addEventListener('play', handler);
+    armPlay();
   }
 
   // =========================================================================
@@ -515,7 +606,24 @@ export class JubJub extends EventEmitter {
           price_per_minute_usdc: this.contentInfo.price_per_minute_usdc,
         },
       );
-      const didApprove = await this.approval.ensureApproved();
+      let didApprove: boolean;
+      try {
+        didApprove = await this.approval.ensureApproved();
+      } catch (approvalErr) {
+        // FAIL CLOSED: the USDC approval was rejected by the user or the
+        // approve tx failed (or the allowance could not be verified). Do NOT
+        // proceed to streaming and do NOT fall through to free play — emit a
+        // distinct 'payment:required' signal that the play harness uses to
+        // keep the video gated with a retry affordance.
+        const error =
+          approvalErr instanceof Error ? approvalErr : new Error(String(approvalErr));
+        console.warn(
+          '[JubJub] USDC approval not granted — gating playback (no free play).',
+          error.message,
+        );
+        this.emit('payment:required', error);
+        return;
+      }
       console.log('[JubJub] Step 4 done:', didApprove ? 'approved' : 'already approved');
       if (didApprove) this.emit('approved', address);
 
