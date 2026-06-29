@@ -27,6 +27,9 @@ let _platformKey: string | null = null;
 let _initApiUrl: string = DEFAULT_API_URL;
 let _initNetwork: 'testnet' | 'mainnet' = 'mainnet';
 let _initShowOverlay = true;
+/** Standing USDC allowance (whole dollars) approved once, drawn down across
+ *  sessions. undefined → Approval uses its bounded default ($10). */
+let _initStreamingAllowanceUsd: number | undefined;
 
 /** Content registration cache: mediaUrl → content_id */
 const _registrationCache = new Map<string, string>();
@@ -218,6 +221,9 @@ export class JubJub extends EventEmitter {
     if (config.apiUrl) _initApiUrl = config.apiUrl;
     if (config.network) _initNetwork = config.network;
     if (config.provider) _injectedProvider = config.provider;
+    if (typeof config.streamingAllowanceUsd === 'number') {
+      _initStreamingAllowanceUsd = config.streamingAllowanceUsd;
+    }
     if (typeof (config as any).showCostOverlay === 'boolean') {
       _initShowOverlay = (config as any).showCostOverlay;
     }
@@ -732,6 +738,9 @@ export class JubJub extends EventEmitter {
             payment_router: this.contentInfo.payment_router,
             chain_id: this.contentInfo.chain_id,
             price_per_minute_usdc: this.contentInfo.price_per_minute_usdc,
+            // Standing allowance: approve once, stream many sessions
+            // signature-free. Bounded default ($10) inside Approval when unset.
+            standing_allowance_usd: _initStreamingAllowanceUsd,
           },
         );
         didApprove = await this.approval.ensureApproved();

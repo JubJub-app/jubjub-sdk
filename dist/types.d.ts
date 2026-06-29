@@ -9,6 +9,13 @@ export interface JubJubInitConfig {
      * or any context where the injected wallet lives outside `window`.
      */
     provider?: any;
+    /**
+     * Standing USDC allowance (in whole dollars) a viewer approves ONCE, then
+     * streams many sessions/videos signature-free as the operator draws it down.
+     * Defaults to $10. Bounded + finite — never an unlimited approval. Re-approve
+     * only happens when the remaining allowance can't cover the next session.
+     */
+    streamingAllowanceUsd?: number;
 }
 export interface ContentRegistration {
     creator: string;
