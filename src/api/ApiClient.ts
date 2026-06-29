@@ -144,6 +144,36 @@ export class ApiClient {
     };
   }
 
+  /**
+   * Tier 2 only: after payment is secured, resolve a short-lived,
+   * session-scoped signed playback URL. Authenticated with the streaming
+   * session token (jj_ Bearer) — the backend gates issuance on the live paid
+   * session. Returns the signed URL to set as the <video> source plus the TTL
+   * the backend stamped on it, so the SDK can re-resolve a fresh URL BEFORE
+   * this one expires (the short-TTL re-resolve loop in PlaybackUrlRefresher).
+   *
+   * Throws (incl. 403/404) whenever the session is no longer active — callers
+   * MUST treat that as fail-closed and never fall back to a durable URL.
+   */
+  async getSessionPlaybackUrl(
+    sessionId: string,
+  ): Promise<{ url: string; expiresInSeconds: number }> {
+    const res = await fetch(
+      `${this.apiUrl}/v2/streaming/sessions/${sessionId}/playback-url`,
+      { method: 'POST', headers: this.authHeaders() },
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Playback URL failed: ${res.status} ${text}`);
+    }
+    const data = await res.json();
+    return {
+      url: data.url,
+      // Backend default is 120s; fall back to it if the field is ever absent.
+      expiresInSeconds: Number(data.expires_in_seconds) || 120,
+    };
+  }
+
   async recordSegment(sessionId: string): Promise<void> {
     const res = await fetch(
       `${this.apiUrl}/v2/streaming/sessions/${sessionId}/segment`,

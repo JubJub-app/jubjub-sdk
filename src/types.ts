@@ -52,6 +52,13 @@ export interface ContentInfo {
   usdc_address: string;
   chain_id: number;
   chain_name?: string;
+  /**
+   * Tier signal. Absent/false → Tier 1: the in-page <video src> is used as
+   * is (SDK never touches video.src). True → Tier 2: after payment is
+   * secured, the SDK resolves a short-lived, session-scoped signed URL from
+   * the backend and sets it as the source. This payload carries no stream URL.
+   */
+  gated?: boolean;
 }
 
 export interface SessionSummary {

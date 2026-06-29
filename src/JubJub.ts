@@ -6,6 +6,7 @@ import { Wallet } from './core/Wallet';
 import { Approval } from './core/Approval';
 import { Session } from './core/Session';
 import { CostTracker } from './core/CostTracker';
+import { PlaybackUrlRefresher } from './core/PlaybackUrlRefresher';
 import { CostOverlay } from './ui/CostOverlay';
 import type {
   JubJubOptions,
@@ -185,6 +186,10 @@ export class JubJub extends EventEmitter {
   private contentInfo: ContentInfo | null = null;
   private video: HTMLVideoElement | null = null;
   private beforeUnloadHandler: (() => void) | null = null;
+  /** Tier-2 only: keeps the short-lived signed URL fresh during playback. */
+  private refresher: PlaybackUrlRefresher | null = null;
+  /** Tier-2 only: mid-playback fail-closed gate (single instance, no stacking). */
+  private midPlaybackGate: { remove: () => void } | null = null;
 
   constructor(options: JubJubOptions = {}) {
     super();
@@ -602,6 +607,48 @@ export class JubJub extends EventEmitter {
     this.emit('payment:required', err);
   }
 
+  /**
+   * Tier-2 mid-playback fail-closed gate. Fired when a gated signed URL can no
+   * longer be refreshed (session settled/closed, 403/404). The refresher has
+   * already paused the element; here we cover it with the retry gate so it
+   * cannot resume on a dead URL. Cost accrual stops automatically — the cost
+   * tracker only advances on `timeupdate`, which a paused element never emits,
+   * so there's nothing to tear down. Retry attempts ONE more re-resolve: it
+   * succeeds only if the session is genuinely still active (otherwise the
+   * backend 403s and the gate stays). We NEVER fall back to a durable URL.
+   */
+  private _gateMidPlayback(cause?: unknown): void {
+    const video = this.video;
+    if (!video) return;
+    try { video.pause(); } catch { /* belt-and-braces; refresher already paused */ }
+    console.warn(
+      '[JubJub] Gated stream could not be refreshed — paused (fail closed).',
+      cause instanceof Error ? cause.message : cause,
+    );
+    // Don't stack gates: a failed retry re-enters here, but the existing gate
+    // stays up and we simply no-op.
+    if (this.midPlaybackGate) return;
+    this.midPlaybackGate = _createPaymentGate(
+      video,
+      () => {
+        void this.refresher?.refreshNow('manual').then((ok) => {
+          if (ok) {
+            this.midPlaybackGate?.remove();
+            this.midPlaybackGate = null;
+            video.play().catch(() => {});
+          }
+          // On failure the refresher re-invokes _gateMidPlayback, which no-ops
+          // because midPlaybackGate is still set — the gate stays. Fail closed.
+        });
+      },
+      'Stream paused',
+      'Your paid session ended. Start a new session to keep watching.',
+    );
+    const err = new Error('gated stream expired') as Error & { sub?: string };
+    err.sub = 'Your paid session ended.';
+    this.emit('payment:required', err);
+  }
+
   async attach(contentId: string, video: HTMLVideoElement): Promise<void> {
     this.video = video;
 
@@ -719,6 +766,42 @@ export class JubJub extends EventEmitter {
       console.log('[JubJub] Step 5 done: session', this.session.id);
       this.emit('session:start', this.session.id);
 
+      // 5.5 Tier 2 (gated host): payment is now secured, so resolve a
+      // short-lived, session-scoped playback URL and point the <video> at it.
+      // Tier 1 (no `gated` flag) skips this entirely — video.src is left
+      // exactly as the host page set it (today's behaviour, byte-for-byte).
+      if (this.contentInfo.gated) {
+        console.log('[JubJub] Step 5.5: gated content — resolving playback URL...');
+        try {
+          const { url, expiresInSeconds } =
+            await this.api.getSessionPlaybackUrl(this.session.id);
+          if (!url) throw new Error('empty playback url');
+          video.src = url;
+
+          // Short TTL must not cap video length: re-resolve a fresh signed URL
+          // BEFORE this one expires (and on an expiry-driven media error) while
+          // the paid session is still active. Fail-closed — if a refresh can't
+          // be resolved the refresher pauses the element and we gate; it never
+          // falls back to a durable/unsigned URL. Tier 1 never reaches here.
+          this.refresher = new PlaybackUrlRefresher(
+            video,
+            this.api,
+            this.session.id,
+            { onFailure: (err) => this._gateMidPlayback(err) },
+          );
+          this.refresher.start(url, expiresInSeconds);
+        } catch (urlErr) {
+          // FAIL CLOSED: a gated video with no resolved source must NEVER play.
+          this._gatePayment(
+            'Stream unavailable',
+            "Couldn't load the protected stream. Please try again.",
+            urlErr,
+          );
+          return;
+        }
+        console.log('[JubJub] Step 5.5 done: gated source set + refresher armed');
+      }
+
       // 6. Cost tracker
       console.log('[JubJub] Step 6: Starting cost tracker + overlay');
       this.costTracker = new CostTracker(
@@ -762,6 +845,12 @@ export class JubJub extends EventEmitter {
     const playback = this.costTracker?.getPlaybackSeconds() ?? 0;
     const cost = this.costTracker?.getCost()?.usdc ?? 0;
     this.costTracker?.stop();
+    // Tier-2: stop the re-resolve loop before the session is closed so a
+    // pending refresh can't race a closed session (and won't gate on teardown).
+    this.refresher?.stop();
+    this.refresher = null;
+    this.midPlaybackGate?.remove();
+    this.midPlaybackGate = null;
     if (this.session) await this.session.close(playback);
     this.overlay?.remove();
     if (this.beforeUnloadHandler) {
