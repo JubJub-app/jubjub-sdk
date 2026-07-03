@@ -27,6 +27,9 @@ let _platformKey: string | null = null;
 let _initApiUrl: string = DEFAULT_API_URL;
 let _initNetwork: 'testnet' | 'mainnet' = 'mainnet';
 let _initShowOverlay = true;
+/** Overlay corner captured from init({ overlayPosition }); threaded into every
+ *  auto-discovered video via play(). undefined → CostOverlay uses its default. */
+let _initOverlayPosition: 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left' | undefined;
 /** Standing USDC allowance (whole dollars) approved once, drawn down across
  *  sessions. undefined → Approval uses its bounded default ($10). */
 let _initStreamingAllowanceUsd: number | undefined;
@@ -227,6 +230,9 @@ export class JubJub extends EventEmitter {
     if (typeof (config as any).showCostOverlay === 'boolean') {
       _initShowOverlay = (config as any).showCostOverlay;
     }
+    if (config.overlayPosition) {
+      _initOverlayPosition = config.overlayPosition;
+    }
 
     if (_initialized) {
       console.log('[JubJub] Already initialized — skipping');
@@ -262,6 +268,7 @@ export class JubJub extends EventEmitter {
       apiUrl: options.apiUrl ?? _initApiUrl,
       network: options.network ?? _initNetwork,
       showCostOverlay: options.showCostOverlay ?? _initShowOverlay,
+      overlayPosition: options.overlayPosition ?? _initOverlayPosition,
     };
 
     if (typeof contentOrId === 'string') {

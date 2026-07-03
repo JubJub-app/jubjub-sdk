@@ -16,6 +16,14 @@ export interface JubJubInitConfig {
    * only happens when the remaining allowance can't cover the next session.
    */
   streamingAllowanceUsd?: number;
+  /**
+   * Corner for the streaming cost / "Powered by JubJub" overlay. Defaults to
+   * 'bottom-right'. Captured by init() and threaded to every auto-discovered
+   * video via play() (mirrors showCostOverlay), so page-level init() can
+   * position it — the auto-discover path never calls play() with per-video
+   * options, so init() is the only place a consumer can set this.
+   */
+  overlayPosition?: 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left';
 }
 
 export interface ContentRegistration {
