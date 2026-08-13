@@ -181,6 +181,19 @@ function _createPaymentGate(
 // ---------------------------------------------------------------------------
 // JubJub class
 // ---------------------------------------------------------------------------
+/**
+ * True when an error is the viewer declining a wallet prompt, rather than a
+ * capability or network failure. EIP-1193 uses code 4001; wallets vary in
+ * message wording, so match both.
+ */
+function _isUserRejection(err: unknown): boolean {
+  const e = err as { code?: unknown; message?: unknown; name?: unknown } | null;
+  if (!e) return false;
+  if (e.code === 4001 || e.code === 'ACTION_REJECTED') return true;
+  const text = `${e.name ?? ''} ${e.message ?? ''}`;
+  return /user rejected|user denied|rejected the request|declined/i.test(text);
+}
+
 export class JubJub extends EventEmitter {
   private options: JubJubOptions;
   private api: ApiClient;
@@ -717,11 +730,39 @@ export class JubJub extends EventEmitter {
       console.log('[JubJub] Step 2 done: wallet', address.slice(0, 10) + '...');
       this.emit('wallet:connected', address);
 
-      // 3. Create viewer session
+      // 3. Create viewer session — proves wallet ownership first (K1-1d).
+      //    The signature prompt lands HERE, i.e. on the viewer's play click
+      //    (attach() runs off the `play` event), never at page load.
       console.log('[JubJub] Step 3: Creating viewer session...');
+
+      // FAIL CLOSED before prompting: a client that cannot sign can never
+      // mint a proven token, and the server rejects the unproven path.
+      if (!this.wallet.canSign()) {
+        this._gatePayment(
+          'Wallet cannot verify ownership',
+          'This wallet cannot sign messages. JubJub needs a signature to ' +
+            'confirm the wallet is yours before streaming.',
+          new Error('wallet client has no signMessage'),
+        );
+        return;
+      }
+
       try {
-        await this.api.createViewerSession(contentId, address);
+        await this.api.createViewerSession(contentId, address, (message) =>
+          this.wallet.signMessage(message),
+        );
       } catch (viewerErr) {
+        // A declined signature is the viewer's own choice — say so plainly
+        // rather than blaming the payment service.
+        if (_isUserRejection(viewerErr)) {
+          this._gatePayment(
+            'Signature declined',
+            'Approve the signature request to confirm your wallet and start ' +
+              'watching. It is free and costs no gas.',
+            viewerErr,
+          );
+          return;
+        }
         // C: viewer-session creation failed → FAIL CLOSED (gate).
         this._gatePayment(
           'Payment service unavailable',

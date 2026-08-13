@@ -56,6 +56,16 @@ export interface WalletLike {
   account?: { address: string } | undefined;
   address?: string | undefined;
   writeContract: (args: any) => Promise<`0x${string}`>;
+  /**
+   * Sign a plain message (EIP-191 personal_sign). Shape matches viem's
+   * WalletClient.signMessage, which is what a BYO client is in practice.
+   *
+   * OPTIONAL so this type change breaks no existing integrator at compile
+   * time — but it is REQUIRED at runtime from the release that proves wallet
+   * ownership on viewer-session (K1-1d). A client without it fails closed
+   * with an actionable error rather than silently minting an unproven token.
+   */
+  signMessage?: (args: { message: string }) => Promise<string>;
 }
 
 export interface ContentInfo {

@@ -1,6 +1,6 @@
 {
   "name": "@jubjub/sdk",
-  "version": "1.3.0",
+  "version": "2.0.0",
   "description": "Add pay-per-view streaming payments to any video. Two lines of code.",
   "main": "dist/jubjub-sdk.umd.js",
   "types": "dist/index.d.ts",

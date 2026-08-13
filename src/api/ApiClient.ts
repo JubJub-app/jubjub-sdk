@@ -87,16 +87,50 @@ export class ApiClient {
     return res.json();
   }
 
+  /**
+   * Mint a viewer session token, proving control of `walletAddress` first.
+   *
+   * K1-1(d): without proof, anyone can mint a token for someone else's wallet
+   * and stream against their standing USDC allowance. The proof reuses the
+   * backend's deployed SIWE flow — GET /v2/auth/wallet-nonce issues a
+   * single-use nonce + canonical message, the viewer signs it, and
+   * viewer-session verifies before minting.
+   *
+   * @param signMessage Signer from the connected wallet. REQUIRED: there is
+   *   deliberately no unproven fallback — the server rejects that path once
+   *   VIEWER_SESSION_REQUIRE_PROOF is on, and a silent fallback would keep
+   *   the hole open indefinitely.
+   */
   async createViewerSession(
     contentId: string,
     walletAddress: string,
+    signMessage: (message: string) => Promise<string>,
   ): Promise<{ sessionToken: string; profileId: string }> {
+    const nonceRes = await fetch(
+      `${this.apiUrl}/v2/auth/wallet-nonce?address=${encodeURIComponent(
+        walletAddress.toLowerCase(),
+      )}`,
+    );
+    if (!nonceRes.ok) {
+      throw new Error(`Wallet nonce failed: ${nonceRes.status}`);
+    }
+    const { nonce, message_to_sign: message } = await nonceRes.json();
+    if (!nonce || !message) {
+      throw new Error('Wallet nonce response was incomplete');
+    }
+
+    // Sign the message EXACTLY as issued — the backend recovers the signer
+    // from this string, so any reformatting breaks verification.
+    const signature = await signMessage(message);
+
     const res = await fetch(`${this.apiUrl}/v2/public/viewer-session`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         content_id: contentId,
         wallet_address: walletAddress,
+        signature,
+        nonce,
       }),
     });
     if (!res.ok) {

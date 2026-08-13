@@ -55,6 +55,32 @@ export class Wallet {
     return this.client;
   }
 
+  /** True when the connected client can produce a personal_sign signature. */
+  canSign(): boolean {
+    return typeof this.client?.signMessage === 'function';
+  }
+
+  /**
+   * Sign `message` with the connected wallet (EIP-191 personal_sign).
+   *
+   * Throws when no wallet is connected, or when the connected client has no
+   * signMessage. Callers must NOT swallow that: proving wallet ownership is
+   * what stops anyone minting a viewer token for someone else's wallet.
+   */
+  async signMessage(message: string): Promise<string> {
+    if (!this.client) {
+      throw new Error('No wallet connected.');
+    }
+    if (typeof this.client.signMessage !== 'function') {
+      throw new Error(
+        'This wallet client cannot sign messages. JubJub requires a wallet ' +
+          'that supports personal_sign (e.g. a viem WalletClient) to verify ' +
+          'wallet ownership before streaming. Pass one via options.wallet.',
+      );
+    }
+    return this.client.signMessage({ message });
+  }
+
   getMode(): 'byo' | 'privy' | null {
     return this.mode;
   }
