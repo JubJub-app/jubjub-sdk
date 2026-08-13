@@ -120,17 +120,26 @@ export class ApiClient {
     return h;
   }
 
+  /**
+   * @param playbackGrant Opaque `jjg_` grant from getPlaybackInfo. Omitted
+   *   when absent (older backend) — the server is in accept-not-require
+   *   mode, so a missing grant must not fail the call.
+   */
   async createStreamingSession(
     contentId: string,
     walletAddress: string,
+    playbackGrant?: string | null,
   ): Promise<{ sessionId: string; onChainSessionId: string }> {
     const res = await fetch(`${this.apiUrl}/v2/streaming/sessions`, {
       method: 'POST',
       headers: this.authHeaders(),
       body: JSON.stringify({
+        // content_id stays: the backend ignores it when a grant is present,
+        // and keeping it makes this change additive for older backends.
         content_id: contentId,
         viewer_wallet: walletAddress,
         viewer_type: 'human',
+        ...(playbackGrant ? { playback_grant: playbackGrant } : {}),
       }),
     });
     if (!res.ok) {

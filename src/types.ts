@@ -60,6 +60,14 @@ export interface WalletLike {
 
 export interface ContentInfo {
   content_id: string;
+  /**
+   * Opaque, short-lived authorisation to open a streaming session for this
+   * content (K1-2). Minted by the playback-info fetch and echoed back on
+   * session create, so the backend — not the caller — chooses the
+   * destination contract. Treat as opaque: never parse or construct it.
+   * Absent when talking to a backend that predates grants.
+   */
+  playback_grant?: string | null;
   title: string | null;
   price_per_minute_usdc: number;
   content_contract: string | null;

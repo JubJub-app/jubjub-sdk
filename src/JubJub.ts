@@ -768,7 +768,14 @@ export class JubJub extends EventEmitter {
       // 5. Create streaming session
       console.log('[JubJub] Step 5: Creating streaming session...');
       try {
-        this.session = await Session.create(contentId, address, this.api);
+        this.session = await Session.create(
+          contentId,
+          address,
+          this.api,
+          // Captured by step 1's getPlaybackInfo. Undefined against a
+          // backend that predates grants — send nothing rather than fail.
+          this.contentInfo?.playback_grant,
+        );
       } catch (streamErr) {
         // D: streaming-session create failed (incl. on-chain createSession
         // revert) → FAIL CLOSED (gate). Payment is not yet secured here.

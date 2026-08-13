@@ -25,8 +25,13 @@ export class Session {
     contentId: string,
     walletAddress: string,
     api: ApiClient,
+    playbackGrant?: string | null,
   ): Promise<Session> {
-    const result = await api.createStreamingSession(contentId, walletAddress);
+    const result = await api.createStreamingSession(
+      contentId,
+      walletAddress,
+      playbackGrant,
+    );
     return new Session(
       result.sessionId,
       result.onChainSessionId,
