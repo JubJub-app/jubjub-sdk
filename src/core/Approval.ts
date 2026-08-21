@@ -53,6 +53,8 @@ const DEFAULT_STREAMING_ALLOWANCE_USD = 10;
 // unbounded) allowance — the approved amount always stays a sane, finite USDC
 // value.
 const MAX_STREAMING_ALLOWANCE_USD = 500;
+const MAX_STREAMING_ALLOWANCE =
+  BigInt(MAX_STREAMING_ALLOWANCE_USD) * 10n ** BigInt(USDC_DECIMALS);
 
 export class Approval {
   private wallet: Wallet;
@@ -139,6 +141,18 @@ export class Approval {
    *
    * Floored at sessionBound because a standing allowance below one session's
    * bound would re-approve forever (isApproved() gates on sessionBound).
+   *
+   * THE CEILING IS CHECKED LAST, ON THE OUTPUT.
+   * It used to be applied to the INPUT `usd` and then overridden by a FLOOR
+   * against `sessionBound`, which has no upper bound of its own
+   * (`ceil(price × 120 × 1e6)`). So whenever sessionBound exceeded the ceiling
+   * the floor won and the clamp was bypassed entirely: above $4.1667/min the
+   * prompt asked for `price × 120` USD, unbounded — exactly the "absurd
+   * allowance" the comment above says can never happen. Checking the returned
+   * value means no future reordering of the two bounds can reopen it.
+   *
+   * REFUSING, NOT CLAMPING, when sessionBound is over the ceiling. See the
+   * thrown error for why.
    */
   private static _boundedStandingAllowance(
     standingAllowanceUsd: number | undefined,
@@ -153,7 +167,32 @@ export class Approval {
     // Dollars → base units, ceil to a finite integer before BigInt().
     const baseUnits = Math.ceil(usd * 10 ** USDC_DECIMALS);
     const standing = BigInt(baseUnits);
-    return standing > sessionBound ? standing : sessionBound;
+    const bounded = standing > sessionBound ? standing : sessionBound;
+
+    if (bounded > MAX_STREAMING_ALLOWANCE) {
+      // Only reachable when the per-minute price implies a session bound above
+      // the ceiling — above roughly $4.17/min. The backend clamps the price it
+      // serves to $0.15/min, and caps a single session at $2, so a price this
+      // high cannot come from a healthy JubJub playback-info response: it is a
+      // hand-built config, a stale backend, or a tampered response.
+      //
+      // An approval is a STANDING on-chain permission, and this one would be
+      // sized from a number we already know is not legitimate. Prompting for
+      // it — even at the ceiling — asks a viewer to grant $500 of USDC on the
+      // strength of a value the SDK does not believe. Failing here puts the
+      // error at the misconfiguration, before any wallet UI, where it cannot
+      // be dismissed or misread.
+      throw new Error(
+        `Refusing to request a streaming allowance of ` +
+          `$${Number(bounded) / 10 ** USDC_DECIMALS} — above the ` +
+          `$${MAX_STREAMING_ALLOWANCE_USD} ceiling. This means ` +
+          `price_per_minute_usdc is set far higher than any real JubJub ` +
+          `price (the backend serves at most $0.15/min); check the ` +
+          `playback-info response or the config passed to init().`,
+      );
+    }
+
+    return bounded;
   }
 
   async isApproved(): Promise<boolean> {
