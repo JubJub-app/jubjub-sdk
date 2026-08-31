@@ -253,7 +253,17 @@ export class ApiClient {
       viewer_wallet: walletAddress,
       playback_seconds: playbackSeconds,
     });
-    const blob = new Blob([payload], { type: 'application/json' });
+    // text/plain, NOT application/json. A JSON Blob is not a CORS-simple
+    // content type, so the browser must preflight it — and during page unload
+    // the document is being discarded, so the OPTIONS goes out and the POST
+    // that should follow is dropped. Measured against production: one OPTIONS
+    // 204, no POST, ever; the session then stayed open until the ten-minute
+    // idle sweep closed it, holding the viewer's pull authority the whole time.
+    // text/plain is preflight-free and actually delivers. The body is still
+    // JSON — the backend parses the bytes and ignores the declared type, and
+    // accepts the old application/json form too so a vendored bundle keeps
+    // working.
+    const blob = new Blob([payload], { type: 'text/plain' });
     navigator.sendBeacon(
       `${this.apiUrl}/v2/streaming/sessions/${sessionId}/beacon-close`,
       blob,

@@ -205,6 +205,8 @@ export class JubJub extends EventEmitter {
   private contentInfo: ContentInfo | null = null;
   private video: HTMLVideoElement | null = null;
   private beforeUnloadHandler: (() => void) | null = null;
+  // Bound to visibilitychange alongside beforeUnloadHandler — see start().
+  private visibilityHandler: (() => void) | null = null;
   /** Tier-2 only: keeps the short-lived signed URL fresh during playback. */
   private refresher: PlaybackUrlRefresher | null = null;
   /** Tier-2 only: mid-playback fail-closed gate (single instance, no stacking). */
@@ -646,6 +648,15 @@ export class JubJub extends EventEmitter {
   private _gateMidPlayback(cause?: unknown): void {
     const video = this.video;
     if (!video) return;
+    // A COMPLETED VIEW IS NOT A PAYMENT FAILURE. Once the content has played to
+    // its end there is nothing left to protect and nothing left to sell, so a
+    // failed re-resolve must not become a paywall. This gate previously fired
+    // ten minutes after a viewer finished a 54s video and told them "your paid
+    // session ended, start a new session" — the last thing they saw after a
+    // view that had worked and been paid for. The refresher now suspends on
+    // `ended` so this should not be reached; it stays as the guard for a
+    // re-resolve already in flight at the moment the video finished.
+    if (video.ended) return;
     try { video.pause(); } catch { /* belt-and-braces; refresher already paused */ }
     console.warn(
       '[JubJub] Gated stream could not be refreshed — paused (fail closed).',
@@ -888,13 +899,30 @@ export class JubJub extends EventEmitter {
         );
       }
 
-      // 8. Beacon close
+      // 8. Beacon close.
+      //
+      // THREE events, not one. `beforeunload` does not fire reliably on mobile
+      // Safari or inside a webview — which is exactly where this SDK runs, the
+      // Farcaster mini-app — so the previous single binding meant mini-app
+      // viewers sent NO close signal at all and every session sat open for the
+      // full ten-minute idle timeout holding live pull authority.
+      // `pagehide` is the reliable unload event in those environments;
+      // `visibilitychange` catches a backgrounded tab that is never formally
+      // unloaded. Guarded so the overlapping events send at most one beacon.
+      let beaconSent = false;
       this.beforeUnloadHandler = () => {
+        if (beaconSent) return;
         if (this.session && this.costTracker) {
+          beaconSent = true;
           this.session.beaconClose(this.costTracker.getPlaybackSeconds());
         }
       };
+      this.visibilityHandler = () => {
+        if (document.visibilityState === 'hidden') this.beforeUnloadHandler?.();
+      };
       window.addEventListener('beforeunload', this.beforeUnloadHandler);
+      window.addEventListener('pagehide', this.beforeUnloadHandler);
+      document.addEventListener('visibilitychange', this.visibilityHandler);
 
       console.log('[JubJub] Ready — streaming payments active');
       this.emit('ready');
@@ -919,7 +947,12 @@ export class JubJub extends EventEmitter {
     this.overlay?.remove();
     if (this.beforeUnloadHandler) {
       window.removeEventListener('beforeunload', this.beforeUnloadHandler);
+      window.removeEventListener('pagehide', this.beforeUnloadHandler);
       this.beforeUnloadHandler = null;
+    }
+    if (this.visibilityHandler) {
+      document.removeEventListener('visibilitychange', this.visibilityHandler);
+      this.visibilityHandler = null;
     }
     const summary: SessionSummary = {
       sessionId: this.session?.id ?? '',

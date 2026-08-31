@@ -59,7 +59,15 @@ export class PlaybackUrlRefresher {
 
   private timer: ReturnType<typeof setTimeout> | null = null;
   private errorHandler: (() => void) | null = null;
+  private endedHandler: (() => void) | null = null;
+  private playHandler: (() => void) | null = null;
   private stopped = false;
+  /**
+   * Set while the content has played to its end. SUSPENDED IS NOT STOPPED:
+   * `stopped` is terminal teardown, this is a pause in the refresh loop that
+   * `play` lifts. Keeping them separate is what allows a replay to work.
+   */
+  private suspended = false;
   private refreshing = false;
   private isHls = false;
 
@@ -96,6 +104,23 @@ export class PlaybackUrlRefresher {
     // signed URL expiring (a range/segment request 403s). Try a re-resolve.
     this.errorHandler = () => this._onMediaError();
     this.video.addEventListener('error', this.errorHandler);
+
+    // A FINISHED VIDEO NEEDS NO FRESH URL. Without this the timer re-armed
+    // forever: a viewer who watched to the end left the page open and the loop
+    // kept issuing authenticated re-resolves every ~96s until the backend's
+    // idle cron closed the session, at which point the next one 403'd and the
+    // SDK painted a payment gate over a video they had already finished.
+    // Suspend (not stop) so a replay can lift it — see `suspended`.
+    this.endedHandler = () => this._onEnded();
+    this.video.addEventListener('ended', this.endedHandler);
+
+    // Replay / resume after the end. The URL on the element may have expired
+    // while we were suspended, so re-resolve immediately rather than trusting
+    // it. If the session is genuinely gone by now this 403s and gates, which
+    // is the correct answer to "let me watch more" — unlike gating someone who
+    // has simply finished.
+    this.playHandler = () => this._onPlay();
+    this.video.addEventListener('play', this.playHandler);
 
     // Proactive path: refresh ahead of expiry so the old URL is replaced
     // before it can fail.
@@ -150,6 +175,14 @@ export class PlaybackUrlRefresher {
       this.video.removeEventListener('error', this.errorHandler);
       this.errorHandler = null;
     }
+    if (this.endedHandler) {
+      this.video.removeEventListener('ended', this.endedHandler);
+      this.endedHandler = null;
+    }
+    if (this.playHandler) {
+      this.video.removeEventListener('play', this.playHandler);
+      this.playHandler = null;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -159,7 +192,7 @@ export class PlaybackUrlRefresher {
       clearTimeout(this.timer);
       this.timer = null;
     }
-    if (this.stopped) return;
+    if (this.stopped || this.suspended) return;
     const ttl =
       Number.isFinite(expiresInSeconds) && expiresInSeconds > 0
         ? expiresInSeconds
@@ -173,8 +206,33 @@ export class PlaybackUrlRefresher {
     }, refreshIn * 1000);
   }
 
+  /**
+   * Content finished. Cancel the pending refresh and stop scheduling new ones.
+   *
+   * NOT `stop()`: teardown would drop the listeners and make replay unfixable.
+   * The session itself is deliberately left open — closing it here would move
+   * settlement, and settlement is already correct. A viewer who finished may
+   * still replay within the backend's idle window; if they don't, the idle cron
+   * closes and settles exactly as it does today.
+   */
+  private _onEnded(): void {
+    if (this.stopped) return;
+    this.suspended = true;
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+  }
+
+  /** Playback resumed after the end — lift the suspension and re-resolve. */
+  private _onPlay(): void {
+    if (this.stopped || !this.suspended) return;
+    this.suspended = false;
+    void this.refreshNow('manual');
+  }
+
   private _onMediaError(): void {
-    if (this.stopped || this.refreshing) return;
+    if (this.stopped || this.suspended || this.refreshing) return;
     // Genuine non-expiry errors also funnel here; they will gate after a failed
     // re-resolve, which is the correct fail-closed outcome.
     void this.refreshNow('error');
