@@ -1,6 +1,6 @@
 import { type NetworkFlag } from './chains';
 import { EventEmitter } from './EventEmitter';
-import type { JubJubOptions, JubJubInitConfig, ContentRegistration, ContentInfo, SessionSummary, CostInfo, WalletLike } from './types';
+import type { JubJubOptions, JubJubInitConfig, ContentRegistration, ContentInfo, SessionSummary, CostInfo, WalletLike, SearchParams, SearchResponse } from './types';
 export declare class JubJub extends EventEmitter {
     private options;
     private api;
@@ -29,6 +29,16 @@ export declare class JubJub extends EventEmitter {
      * Accepts a content ID string OR a ContentRegistration object.
      * Backward compatible with all previous signatures.
      */
+    /**
+     * Search JubJub's whole discoverable catalogue with the key from init().
+     * Free. Returns projected public cards (thumbnail_url resolved
+     * server-side) plus a next_cursor to page with — null when exhausted.
+     *
+     * A found card's content_id goes straight into the existing playback
+     * flow: set it as data-jubjub-content-id on a <video>, or call
+     * JubJub.play(contentId, video).
+     */
+    static search(params?: SearchParams): Promise<SearchResponse>;
     static play(contentOrId: string | ContentRegistration, video: HTMLVideoElement, options?: JubJubOptions): JubJub;
     /**
      * Connect a browser-injected wallet (MetaMask, Coinbase Wallet, etc.).

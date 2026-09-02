@@ -10,6 +10,14 @@ Add pay-per-view streaming payments to any video on your website.
 ```html
 <script src="https://jubjub-app.github.io/jubjub-sdk/dist/jubjub-sdk.umd.js"></script>
 <script>JubJub.init({ platformKey: 'pk_YOUR_KEY' });</script>
+
+<!-- Optional: surface JubJub's whole catalogue on your site -->
+<script>
+  JubJub.search({ topic: 'surfing' }).then(({ results }) => {
+    // each card: { content_id, title, thumbnail_url, topics, ... }
+    // play one: <video data-jubjub-content-id="..."> or JubJub.play(id, video)
+  });
+</script>
 ```
 
 3. Add data attributes to your video elements:

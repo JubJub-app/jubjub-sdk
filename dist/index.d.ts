@@ -6,5 +6,5 @@ export { Session } from './core/Session';
 export { CostTracker } from './core/CostTracker';
 export { CostOverlay } from './ui/CostOverlay';
 export { EventEmitter } from './EventEmitter';
-export type { JubJubOptions, JubJubInitConfig, ContentRegistration, ContentInfo, SessionSummary, CostInfo, WalletLike, } from './types';
+export type { JubJubOptions, JubJubInitConfig, ContentRegistration, ContentInfo, SessionSummary, CostInfo, WalletLike, SearchParams, SearchResultCard, SearchResponse, } from './types';
 export { JubJub as default } from './JubJub';

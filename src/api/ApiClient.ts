@@ -1,4 +1,4 @@
-import type { ContentInfo } from '../types';
+import type { ContentInfo, SearchParams, SearchResponse } from '../types';
 
 export class ApiClient {
   private apiUrl: string;
@@ -142,6 +142,50 @@ export class ApiClient {
       sessionToken: data.session_token,
       profileId: data.profile_id,
     };
+  }
+
+  // -- Catalogue discovery (platform key auth) --
+
+  /**
+   * Search JubJub's discoverable catalogue. Free — search is the discovery
+   * funnel; only per-piece unlocks are priced.
+   *
+   * Auth is the platform key. The backend FORCES the projected public
+   * corpus for platform-key principals regardless of any scope value, so
+   * this can only ever see what creators have left discoverable, with
+   * owner identifiers stripped server-side. Pass a response's next_cursor
+   * back as `cursor` to continue; null means the corpus is exhausted.
+   */
+  async search(
+    platformKey: string,
+    params: SearchParams = {},
+  ): Promise<SearchResponse> {
+    const q = new URLSearchParams({ scope: 'discoverable' });
+    const wire: Record<string, string | number | boolean | null | undefined> = {
+      topic: params.topic,
+      domain: params.domain,
+      sub_domain: params.subDomain,
+      content_type: params.contentType,
+      pacing: params.pacing,
+      movement_intensity: params.movementIntensity,
+      face_present: params.facePresent,
+      music_present: params.musicPresent,
+      speech_present: params.speechPresent,
+      on_screen_text: params.onScreenText,
+      limit: params.limit,
+      cursor: params.cursor,
+    };
+    for (const [k, v] of Object.entries(wire)) {
+      if (v !== undefined && v !== null) q.set(k, String(v));
+    }
+
+    const res = await fetch(`${this.apiUrl}/v2/media/search?${q.toString()}`, {
+      headers: { 'X-JubJub-Platform-Key': platformKey },
+    });
+    if (!res.ok) {
+      throw new Error(`JubJub search failed (${res.status})`);
+    }
+    return (await res.json()) as SearchResponse;
   }
 
   // -- Authenticated endpoints (jj_ Bearer token) --

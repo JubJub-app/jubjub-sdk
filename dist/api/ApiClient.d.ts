@@ -1,4 +1,4 @@
-import type { ContentInfo } from '../types';
+import type { ContentInfo, SearchParams, SearchResponse } from '../types';
 export declare class ApiClient {
     private apiUrl;
     private sessionToken;
@@ -36,6 +36,17 @@ export declare class ApiClient {
         sessionToken: string;
         profileId: string;
     }>;
+    /**
+     * Search JubJub's discoverable catalogue. Free — search is the discovery
+     * funnel; only per-piece unlocks are priced.
+     *
+     * Auth is the platform key. The backend FORCES the projected public
+     * corpus for platform-key principals regardless of any scope value, so
+     * this can only ever see what creators have left discoverable, with
+     * owner identifiers stripped server-side. Pass a response's next_cursor
+     * back as `cursor` to continue; null means the corpus is exhausted.
+     */
+    search(platformKey: string, params?: SearchParams): Promise<SearchResponse>;
     private authHeaders;
     /**
      * @param playbackGrant Opaque `jjg_` grant from getPlaybackInfo. Omitted

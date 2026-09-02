@@ -14,6 +14,9 @@ export type {
   SessionSummary,
   CostInfo,
   WalletLike,
+  SearchParams,
+  SearchResultCard,
+  SearchResponse,
 } from './types';
 
 // Default export = the JubJub class. In UMD builds this becomes

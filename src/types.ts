@@ -106,3 +106,47 @@ export interface CostInfo {
   seconds: number;
   formatted: string;
 }
+
+/** Filters for catalogue search. All optional; omit everything to browse
+ *  the newest discoverable content. Facet names mirror the backend's
+ *  whitelist — unknown facets are ignored server-side, never errors. */
+export interface SearchParams {
+  /** Free-text tokens matched against topics, domain, sub-domain and title. */
+  topic?: string;
+  domain?: string;
+  subDomain?: string;
+  contentType?: string;
+  pacing?: string;
+  movementIntensity?: string;
+  facePresent?: boolean;
+  musicPresent?: boolean;
+  speechPresent?: boolean;
+  onScreenText?: boolean;
+  /** Max results (server caps at 100). */
+  limit?: number;
+  /** Opaque bookmark from a previous response's next_cursor — pass it back
+   *  verbatim to continue. */
+  cursor?: string | null;
+}
+
+/** One discoverable catalogue card. Owner identifiers are stripped
+ *  server-side; thumbnail_url is resolved server-side when available. */
+export interface SearchResultCard {
+  content_id: string;
+  title?: string;
+  thumbnail_id?: string;
+  thumbnail_url?: string;
+  domain?: string;
+  sub_domain?: string;
+  content_type?: string;
+  topics?: string[];
+  [key: string]: unknown;
+}
+
+export interface SearchResponse {
+  results: SearchResultCard[];
+  count: number;
+  scope: string;
+  /** null exactly when the discoverable corpus is exhausted. */
+  next_cursor: string | null;
+}

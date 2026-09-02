@@ -304,6 +304,7 @@ sdk.on('ready', () => {});
 | Method | Returns | Description |
 |---|---|---|
 | `JubJub.play(contentId, video, options?)` | `JubJub` | Static shorthand. Errors emitted, not thrown. |
+| `JubJub.search(params?)` | `Promise<SearchResponse>` | Search JubJub's whole discoverable catalogue with the key from `init()`. Free. Filters: `topic` free-text plus facets (`domain`, `contentType`, `pacing`, `musicPresent`, …); page with `cursor` from the response's `next_cursor` (null = exhausted). A card's `content_id` feeds straight into `data-jubjub-content-id` / `JubJub.play()`. |
 | `JubJub.connectBrowserWallet(network?)` | `Promise<WalletLike>` | Connect MetaMask/Coinbase/injected wallet. Switches to the active network's chain — Base Sepolia on `'testnet'` (default), Base mainnet on `'mainnet'`. |
 | `sdk.attach(contentId, video)` | `Promise<void>` | Full setup: wallet, approve, session, tracking. |
 | `sdk.disconnect()` | `Promise<SessionSummary>` | Close session, return final cost. |
