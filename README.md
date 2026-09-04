@@ -112,7 +112,7 @@ JubJub mints an ownership token for every piece of content. Revenue flows throug
 ```js
 const sdk = new JubJub({
   apiUrl: 'https://api.jubjubapp.com',    // API endpoint
-  network: 'testnet',                      // 'testnet' (Base Sepolia, default) or 'mainnet' (Base)
+  network: 'mainnet',                      // 'mainnet' (Base, default) or 'testnet' (Base Sepolia)
   showCostOverlay: true,                   // Show cost/time overlay
   overlayPosition: 'bottom-right',         // 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left'
   wallet: myWalletClient,                  // Optional: bring your own viem WalletClient
@@ -183,12 +183,11 @@ Returns `{ id, onChainId }` or null.
 
 ## Chain Info
 
-The SDK runs on Base. `network: 'testnet'` (the default) uses Base
-Sepolia; `network: 'mainnet'` uses Base mainnet. As of v1.0.0 the
-`network` flag is fully wired — selecting `'mainnet'` switches the
-wallet chain, RPC, and block explorer to Base mainnet (chain `8453`).
-The default stays `'testnet'` so existing integrations are unaffected
-until they explicitly opt in.
+The SDK runs on Base. `network: 'mainnet'` (the default, `src/JubJub.ts`)
+uses Base mainnet (chain `8453`); `network: 'testnet'` uses Base Sepolia
+(chain `84532`). The flag switches the wallet chain, RPC and block
+explorer together. An integration that omits `network` is on mainnet and
+moves real USDC; pass `'testnet'` explicitly to develop against Sepolia.
 
 Contract addresses (USDC, payment router) are **not** baked into the
 SDK — they are returned by the backend playback-info response per

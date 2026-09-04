@@ -1,8 +1,8 @@
 # JubJub SDK Reference
 
-**Version:** 1.0.0
-**Chain:** Base (Coinbase L2) — `network: 'testnet'` → Base Sepolia (default), `network: 'mainnet'` → Base mainnet
-**Status:** Live on Base mainnet. Default network stays `'testnet'`; opt into mainnet with `network: 'mainnet'`.
+**Version:** 2.0.0
+**Chain:** Base (Coinbase L2) — `network: 'mainnet'` → Base mainnet (default), `network: 'testnet'` → Base Sepolia
+**Status:** Live on Base mainnet. Omitting `network` means mainnet; pass `network: 'testnet'` to develop against Sepolia.
 
 ---
 
@@ -260,7 +260,7 @@ SDK uses the corresponding Base mainnet addresses returned by the backend.
 const sdk = new JubJub({
   wallet: myWalletClient,          // BYO viem WalletClient, or null for prompt
   apiUrl: 'https://api.jubjubapp.com',
-  network: 'testnet',             // 'testnet' (Base Sepolia, default) or 'mainnet' (Base) — now fully wired
+  network: 'mainnet',             // 'mainnet' (Base, default) or 'testnet' (Base Sepolia)
   showCostOverlay: true,           // default true
   overlayPosition: 'bottom-right', // 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left'
   onCostUpdate: (cost, seconds) => {},
@@ -305,7 +305,7 @@ sdk.on('ready', () => {});
 |---|---|---|
 | `JubJub.play(contentId, video, options?)` | `JubJub` | Static shorthand. Errors emitted, not thrown. |
 | `JubJub.search(params?)` | `Promise<SearchResponse>` | Search JubJub's whole discoverable catalogue with the key from `init()`. Free. Filters: `topic` free-text plus facets (`domain`, `contentType`, `pacing`, `musicPresent`, …); page with `cursor` from the response's `next_cursor` (null = exhausted). A card's `content_id` feeds straight into `data-jubjub-content-id` / `JubJub.play()`. |
-| `JubJub.connectBrowserWallet(network?)` | `Promise<WalletLike>` | Connect MetaMask/Coinbase/injected wallet. Switches to the active network's chain — Base Sepolia on `'testnet'` (default), Base mainnet on `'mainnet'`. |
+| `JubJub.connectBrowserWallet(network?)` | `Promise<WalletLike>` | Connect MetaMask/Coinbase/injected wallet. Switches to the active network's chain — Base mainnet on `'mainnet'` (default), Base Sepolia on `'testnet'`. |
 | `sdk.attach(contentId, video)` | `Promise<void>` | Full setup: wallet, approve, session, tracking. |
 | `sdk.disconnect()` | `Promise<SessionSummary>` | Close session, return final cost. |
 | `sdk.getCost()` | `CostInfo` | Current `{ usdc, seconds, formatted }`. |
