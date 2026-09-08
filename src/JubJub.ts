@@ -60,11 +60,20 @@ let _initialized = false;
  */
 let _injectedProvider: any | null = null;
 
+/**
+ * Session token shared by every video on the page. Set by init({ sessionToken })
+ * or JubJub.setSessionToken() when the host already signed the viewer in, and
+ * ALSO by the first attach() that mints a viewer token itself — so a page with
+ * several videos asks for the wallet signature at most once, host sign-in or
+ * not. Cleared when a streaming call rejects it, so the next play re-proves.
+ */
+let _sessionToken: string | null = null;
+
 // ---------------------------------------------------------------------------
 // Defaults
 // ---------------------------------------------------------------------------
 const DEFAULTS: Required<
-  Omit<JubJubOptions, 'contentId' | 'wallet' | 'onCostUpdate' | 'onSessionStart' | 'onSessionEnd' | 'onError' | 'onWalletConnected'>
+  Omit<JubJubOptions, 'contentId' | 'wallet' | 'sessionToken' | 'onCostUpdate' | 'onSessionStart' | 'onSessionEnd' | 'onError' | 'onWalletConnected'>
 > & { contentId: string | undefined; wallet: any } = {
   contentId: undefined,
   wallet: undefined,
@@ -218,6 +227,8 @@ export class JubJub extends EventEmitter {
     super();
     this.options = { ...DEFAULTS, ...options };
     this.api = new ApiClient(this.options.apiUrl ?? DEFAULT_API_URL);
+    const presetToken = options.sessionToken ?? _sessionToken;
+    if (presetToken) this.api.setSessionToken(presetToken);
     this.wallet = new Wallet(this.options.wallet ?? _sharedWallet ?? undefined);
 
     if (options.onCostUpdate) this.on('cost', (c: CostInfo) => options.onCostUpdate!(c.usdc, c.seconds));
@@ -241,6 +252,9 @@ export class JubJub extends EventEmitter {
     if (config.apiUrl) _initApiUrl = config.apiUrl;
     if (config.network) _initNetwork = config.network;
     if (config.provider) _injectedProvider = config.provider;
+    if (typeof config.sessionToken === 'string' && config.sessionToken.trim()) {
+      _sessionToken = config.sessionToken.trim();
+    }
     if (typeof config.streamingAllowanceUsd === 'number') {
       _initStreamingAllowanceUsd = config.streamingAllowanceUsd;
     }
@@ -282,6 +296,27 @@ export class JubJub extends EventEmitter {
    * flow: set it as data-jubjub-content-id on a <video>, or call
    * JubJub.play(contentId, video).
    */
+  /**
+   * Hand the SDK a session token the page already holds (see
+   * JubJubInitConfig.sessionToken). Pass null to forget it. Applies to every
+   * video attached AFTER the call; an instance already mid-flow keeps its own.
+   */
+  static setSessionToken(token: string | null | undefined): void {
+    _sessionToken = typeof token === 'string' && token.trim() ? token.trim() : null;
+  }
+
+  /**
+   * Forget the page-shared wallet so the next play connects afresh. Needed
+   * when the host switches provider (init({ provider }) with a different
+   * connector, e.g. injected → WalletConnect) or the user disconnects: the
+   * SDK caches the first wallet it connected for the life of the page and
+   * would otherwise keep signing with it.
+   */
+  static resetWallet(): void {
+    _sharedWallet = null;
+    _walletConnecting = null;
+  }
+
   static async search(params: SearchParams = {}): Promise<SearchResponse> {
     if (!_platformKey) {
       throw new Error('Call JubJub.init({ platformKey }) before using search.');
@@ -763,6 +798,13 @@ export class JubJub extends EventEmitter {
       // 3. Create viewer session — proves wallet ownership first (K1-1d).
       //    The signature prompt lands HERE, i.e. on the viewer's play click
       //    (attach() runs off the `play` event), never at page load.
+      //    SKIPPED when a session token is already held: the host signed the
+      //    viewer in (init({ sessionToken }) / setSessionToken), or an
+      //    earlier video on this page already minted one. One signature per
+      //    page, never one per video.
+      if (this.api.hasSessionToken()) {
+        console.log('[JubJub] Step 3: session token already held — no signature needed');
+      } else {
       console.log('[JubJub] Step 3: Creating viewer session...');
 
       // FAIL CLOSED before prompting: a client that cannot sign can never
@@ -778,9 +820,11 @@ export class JubJub extends EventEmitter {
       }
 
       try {
-        await this.api.createViewerSession(contentId, address, (message) =>
+        const minted = await this.api.createViewerSession(contentId, address, (message) =>
           this.wallet.signMessage(message),
         );
+        // Share it with every later video on this page.
+        _sessionToken = minted.sessionToken;
       } catch (viewerErr) {
         // A declined signature is the viewer's own choice — say so plainly
         // rather than blaming the payment service.
@@ -802,6 +846,7 @@ export class JubJub extends EventEmitter {
         return;
       }
       console.log('[JubJub] Step 3 done');
+      }
 
       // 4. Approve USDC
       console.log('[JubJub] Step 4: Checking USDC approval...');
@@ -850,6 +895,10 @@ export class JubJub extends EventEmitter {
       } catch (streamErr) {
         // D: streaming-session create failed (incl. on-chain createSession
         // revert) → FAIL CLOSED (gate). Payment is not yet secured here.
+        // A page-shared token that the backend refused (expired 24h TTL,
+        // revoked) must not be reused by the next play: forget it so the
+        // retry proves the wallet afresh instead of failing the same way.
+        _sessionToken = null;
         this._gatePayment(
           'Payment service unavailable',
           "Couldn't start the streaming payment. Please try again.",

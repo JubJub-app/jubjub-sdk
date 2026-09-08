@@ -38,6 +38,20 @@ export declare class JubJub extends EventEmitter {
      * flow: set it as data-jubjub-content-id on a <video>, or call
      * JubJub.play(contentId, video).
      */
+    /**
+     * Hand the SDK a session token the page already holds (see
+     * JubJubInitConfig.sessionToken). Pass null to forget it. Applies to every
+     * video attached AFTER the call; an instance already mid-flow keeps its own.
+     */
+    static setSessionToken(token: string | null | undefined): void;
+    /**
+     * Forget the page-shared wallet so the next play connects afresh. Needed
+     * when the host switches provider (init({ provider }) with a different
+     * connector, e.g. injected → WalletConnect) or the user disconnects: the
+     * SDK caches the first wallet it connected for the life of the page and
+     * would otherwise keep signing with it.
+     */
+    static resetWallet(): void;
     static search(params?: SearchParams): Promise<SearchResponse>;
     static play(contentOrId: string | ContentRegistration, video: HTMLVideoElement, options?: JubJubOptions): JubJub;
     /**

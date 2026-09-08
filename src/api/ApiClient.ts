@@ -12,6 +12,11 @@ export class ApiClient {
     this.sessionToken = token;
   }
 
+  /** True once a viewer/session token is held — the signature step can be skipped. */
+  hasSessionToken(): boolean {
+    return !!this.sessionToken;
+  }
+
   // -- Platform registration (platform key auth) --
 
   async registerContent(

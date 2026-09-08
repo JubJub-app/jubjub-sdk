@@ -24,6 +24,15 @@ export interface JubJubInitConfig {
      * options, so init() is the only place a consumer can set this.
      */
     overlayPosition?: 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left';
+    /**
+     * A JubJub session token (`jj_…`) the host page already holds, e.g. from
+     * POST /v2/auth/register-viewer after its own SIWE sign-in. When set, the
+     * SDK sends it on every streaming call and SKIPS its own per-video
+     * wallet-signature step, so a viewer who has signed in once is never
+     * prompted again to prove the same wallet. Also settable later via
+     * JubJub.setSessionToken(). Never persisted by the SDK.
+     */
+    sessionToken?: string;
 }
 export interface ContentRegistration {
     creator: string;
@@ -47,6 +56,8 @@ export interface JubJubOptions {
     onSessionEnd?: (summary: SessionSummary) => void;
     onError?: (error: Error) => void;
     onWalletConnected?: (address: string) => void;
+    /** Per-instance override of the page-level token — see JubJubInitConfig.sessionToken. */
+    sessionToken?: string;
 }
 /** Duck-typed wallet interface — any object with address + writeContract. */
 export interface WalletLike {

@@ -1,6 +1,6 @@
 # JubJub SDK Reference
 
-**Version:** 2.0.0
+**Version:** 2.1.0
 **Chain:** Base (Coinbase L2) — `network: 'mainnet'` → Base mainnet (default), `network: 'testnet'` → Base Sepolia
 **Status:** Live on Base mainnet. Omitting `network` means mainnet; pass `network: 'testnet'` to develop against Sepolia.
 
@@ -268,10 +268,36 @@ const sdk = new JubJub({
   onSessionEnd: (summary) => {},
   onError: (error) => {},
   onWalletConnected: (address) => {},
+  sessionToken: 'jj_...',          // optional: a session the host already holds (see below)
 });
 
 await sdk.attach('cnt_abc123', videoElement);
 ```
+
+### One signature per page, not per video
+
+By default the SDK proves wallet ownership once per video: on play it fetches
+a nonce, asks the wallet to sign it, and mints a viewer session token. From
+2.1.0 that token is shared across every video on the page, so the second
+video never prompts. A host page that signs the viewer in itself (SIWE via
+`POST /v2/auth/register-viewer`) can hand its session token over and the SDK
+skips the signature step entirely:
+
+```javascript
+JubJub.init({ platformKey: 'pk_...', sessionToken: 'jj_...' });
+// or, after init, when the viewer signs in:
+JubJub.setSessionToken('jj_...');
+```
+
+The SDK never persists the token. If the backend refuses it (expired, revoked)
+the SDK forgets it and the next play proves the wallet again.
+
+### Switching wallet providers
+
+`JubJub.init({ provider })` may be called again with a different EIP-1193
+provider (for example injected first, WalletConnect later). Call
+`JubJub.resetWallet()` first so the page-shared wallet from the previous
+provider is forgotten; otherwise the SDK keeps signing with it.
 
 ### Static shorthand
 
@@ -305,6 +331,8 @@ sdk.on('ready', () => {});
 |---|---|---|
 | `JubJub.play(contentId, video, options?)` | `JubJub` | Static shorthand. Errors emitted, not thrown. |
 | `JubJub.search(params?)` | `Promise<SearchResponse>` | Search JubJub's whole discoverable catalogue with the key from `init()`. Free. Filters: `topic` free-text plus facets (`domain`, `contentType`, `pacing`, `musicPresent`, …); page with `cursor` from the response's `next_cursor` (null = exhausted). A card's `content_id` feeds straight into `data-jubjub-content-id` / `JubJub.play()`. |
+| `JubJub.setSessionToken(token \| null)` | `void` | Hand over (or forget) a page-level session token; later videos skip the signature step. |
+| `JubJub.resetWallet()` | `void` | Forget the page-shared wallet, e.g. before re-`init` with another provider. |
 | `JubJub.connectBrowserWallet(network?)` | `Promise<WalletLike>` | Connect MetaMask/Coinbase/injected wallet. Switches to the active network's chain — Base mainnet on `'mainnet'` (default), Base Sepolia on `'testnet'`. |
 | `sdk.attach(contentId, video)` | `Promise<void>` | Full setup: wallet, approve, session, tracking. |
 | `sdk.disconnect()` | `Promise<SessionSummary>` | Close session, return final cost. |

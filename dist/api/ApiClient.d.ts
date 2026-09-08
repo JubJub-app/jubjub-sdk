@@ -4,6 +4,8 @@ export declare class ApiClient {
     private sessionToken;
     constructor(apiUrl: string);
     setSessionToken(token: string): void;
+    /** True once a viewer/session token is held — the signature step can be skipped. */
+    hasSessionToken(): boolean;
     registerContent(platformKey: string, info: {
         creator: string;
         title: string;
