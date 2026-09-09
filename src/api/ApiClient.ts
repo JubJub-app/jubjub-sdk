@@ -179,6 +179,7 @@ export class ApiClient {
       on_screen_text: params.onScreenText,
       limit: params.limit,
       cursor: params.cursor,
+      include_unanalysed: params.includeUnanalysed,
     };
     for (const [k, v] of Object.entries(wire)) {
       if (v !== undefined && v !== null) q.set(k, String(v));
