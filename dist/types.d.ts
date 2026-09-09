@@ -135,6 +135,10 @@ export interface SearchParams {
     /** Opaque bookmark from a previous response's next_cursor — pass it back
      *  verbatim to continue. */
     cursor?: string | null;
+    /** Also return minted pieces indexed with no extracted metadata: imports
+     *  registered for revenue, which live on their platform (see the card's
+     *  `platform_video_url`). Off by default; a viewer surface turns it on. */
+    includeUnanalysed?: boolean;
 }
 /** One discoverable catalogue card. Owner identifiers are stripped
  *  server-side; thumbnail_url is resolved server-side when available. */

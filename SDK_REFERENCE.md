@@ -1,6 +1,6 @@
 # JubJub SDK Reference
 
-**Version:** 2.1.0
+**Version:** 2.1.1
 **Chain:** Base (Coinbase L2) — `network: 'mainnet'` → Base mainnet (default), `network: 'testnet'` → Base Sepolia
 **Status:** Live on Base mainnet. Omitting `network` means mainnet; pass `network: 'testnet'` to develop against Sepolia.
 
@@ -330,7 +330,7 @@ sdk.on('ready', () => {});
 | Method | Returns | Description |
 |---|---|---|
 | `JubJub.play(contentId, video, options?)` | `JubJub` | Static shorthand. Errors emitted, not thrown. |
-| `JubJub.search(params?)` | `Promise<SearchResponse>` | Search JubJub's whole discoverable catalogue with the key from `init()`. Free. Filters: `topic` free-text plus facets (`domain`, `contentType`, `pacing`, `musicPresent`, …); page with `cursor` from the response's `next_cursor` (null = exhausted). A card's `content_id` feeds straight into `data-jubjub-content-id` / `JubJub.play()`. |
+| `JubJub.search(params?)` | `Promise<SearchResponse>` | Search JubJub's whole discoverable catalogue with the key from `init()`. Free. Filters: `topic` free-text plus facets (`domain`, `contentType`, `pacing`, `musicPresent`, …); page with `cursor` from the response's `next_cursor` (null = exhausted); `includeUnanalysed: true` also returns registered imports that live on their platform (the card's `platform_video_url`), which have nothing to play here. A card's `content_id` feeds straight into `data-jubjub-content-id` / `JubJub.play()`. |
 | `JubJub.setSessionToken(token \| null)` | `void` | Hand over (or forget) a page-level session token; later videos skip the signature step. |
 | `JubJub.resetWallet()` | `void` | Forget the page-shared wallet, e.g. before re-`init` with another provider. |
 | `JubJub.connectBrowserWallet(network?)` | `Promise<WalletLike>` | Connect MetaMask/Coinbase/injected wallet. Switches to the active network's chain — Base mainnet on `'mainnet'` (default), Base Sepolia on `'testnet'`. |
