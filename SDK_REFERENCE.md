@@ -1,6 +1,6 @@
 # JubJub SDK Reference
 
-**Version:** 2.1.1
+**Version:** 2.1.2
 **Chain:** Base (Coinbase L2) — `network: 'mainnet'` → Base mainnet (default), `network: 'testnet'` → Base Sepolia
 **Status:** Live on Base mainnet. Omitting `network` means mainnet; pass `network: 'testnet'` to develop against Sepolia.
 

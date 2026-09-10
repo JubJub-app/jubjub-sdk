@@ -18,6 +18,8 @@ export declare class JubJub extends EventEmitter {
     /** Tier-2 only: mid-playback fail-closed gate (single instance, no stacking). */
     private midPlaybackGate;
     constructor(options?: JubJubOptions);
+    /** The package.json version this bundle was built from. */
+    static readonly version: string;
     /**
      * Initialise the SDK. Call once per page. Auto-discovers video elements
      * with `data-jubjub-*` attributes and attaches payment flows.

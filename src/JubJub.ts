@@ -1,5 +1,11 @@
 import { createWalletClient, custom } from 'viem';
 import { chainForNetwork, type NetworkFlag } from './chains';
+import {
+  chainIdMatches,
+  chainMismatchError,
+  isChainMismatchError,
+  isUserRejection,
+} from './walletChain';
 import { EventEmitter } from './EventEmitter';
 import { ApiClient } from './api/ApiClient';
 import { Wallet } from './core/Wallet';
@@ -21,6 +27,9 @@ import type {
 } from './types';
 
 const DEFAULT_API_URL = 'https://api.jubjubapp.com';
+/** package.json version, injected by vite `define`; see src/build-info.d.ts. */
+const SDK_VERSION: string =
+  typeof __JUBJUB_VERSION__ === 'string' ? __JUBJUB_VERSION__ : '0.0.0-dev';
 
 // ---------------------------------------------------------------------------
 // Module-level state (shared across all JubJub instances on the page)
@@ -194,15 +203,20 @@ function _createPaymentGate(
 // ---------------------------------------------------------------------------
 /**
  * True when an error is the viewer declining a wallet prompt, rather than a
- * capability or network failure. EIP-1193 uses code 4001; wallets vary in
- * message wording, so match both.
+ * capability or network failure. Implemented in src/walletChain.ts (pure,
+ * unit-tested); kept under this name so call sites read as before.
  */
 function _isUserRejection(err: unknown): boolean {
-  const e = err as { code?: unknown; message?: unknown; name?: unknown } | null;
-  if (!e) return false;
-  if (e.code === 4001 || e.code === 'ACTION_REJECTED') return true;
-  const text = `${e.name ?? ''} ${e.message ?? ''}`;
-  return /user rejected|user denied|rejected the request|declined/i.test(text);
+  return isUserRejection(err);
+}
+
+/**
+ * True when the wallet is on a different network than the SDK needs and the
+ * viewer has to switch it (our own post-switch check, or Phantom's refusal
+ * text). See src/walletChain.ts.
+ */
+function _isChainMismatch(err: unknown): boolean {
+  return isChainMismatchError(err);
 }
 
 export class JubJub extends EventEmitter {
@@ -242,12 +256,18 @@ export class JubJub extends EventEmitter {
   // Static API
   // =========================================================================
 
+  /** The package.json version this bundle was built from. */
+  static readonly version: string = SDK_VERSION;
+
   /**
    * Initialise the SDK. Call once per page. Auto-discovers video elements
    * with `data-jubjub-*` attributes and attaches payment flows.
    */
   static init(config: JubJubInitConfig): void {
-    console.log('[JubJub] init() called', { key: config.platformKey?.slice(0, 10) + '...' });
+    console.log('[JubJub] init() called', {
+      version: SDK_VERSION,
+      key: config.platformKey?.slice(0, 10) + '...',
+    });
     _platformKey = config.platformKey;
     if (config.apiUrl) _initApiUrl = config.apiUrl;
     if (config.network) _initNetwork = config.network;
@@ -385,13 +405,22 @@ export class JubJub extends EventEmitter {
 
     const address = accounts[0] as `0x${string}`;
 
+    // Switch to the configured chain. A viewer who declines the switch
+    // (4001) is a user rejection and propagates as one, so the play harness
+    // says "declined" rather than blaming the payment service. 4902 means the
+    // chain is unknown to the wallet: add it (which switches on success). Any
+    // other refusal is remembered and settled by the eth_chainId check below
+    // rather than swallowed, so a wallet left on the wrong network can never
+    // continue into approval and fail later with an unrelated error.
+    let switchFailure: unknown = null;
     try {
       await ethereum.request({
         method: 'wallet_switchEthereumChain',
         params: [{ chainId: chain.chainIdHex }],
       });
     } catch (switchError: any) {
-      if (switchError.code === 4902) {
+      if (_isUserRejection(switchError)) throw switchError;
+      if (switchError?.code === 4902) {
         await ethereum.request({
           method: 'wallet_addEthereumChain',
           params: [{
@@ -402,7 +431,32 @@ export class JubJub extends EventEmitter {
             blockExplorerUrls: [chain.explorer],
           }],
         });
+      } else {
+        switchFailure = switchError;
       }
+    }
+
+    // Verify rather than trust: read the wallet's active chain and compare it
+    // with the registry entry for the configured network. A provider that
+    // cannot answer eth_chainId is given the benefit of the doubt only when
+    // the switch itself raised nothing.
+    let observedChainId: unknown = null;
+    try {
+      observedChainId = await ethereum.request({ method: 'eth_chainId' });
+    } catch {
+      observedChainId = null;
+    }
+    const onWrongChain =
+      observedChainId !== null && observedChainId !== undefined
+        ? !chainIdMatches(observedChainId, chain.chainId)
+        : switchFailure !== null;
+    if (onWrongChain) {
+      console.warn(
+        `[JubJub] Wallet is not on ${chain.label} (chain ${chain.chainId}); ` +
+          `observed ${String(observedChainId)}.`,
+        switchFailure instanceof Error ? switchFailure.message : switchFailure ?? '',
+      );
+      throw chainMismatchError(chain.label, switchFailure ?? undefined);
     }
 
     const client = createWalletClient({
@@ -617,11 +671,24 @@ export class JubJub extends EventEmitter {
       throw new Error('no-wallet');
     }
 
+    // Share one in-flight connect across every video on the page, but never
+    // cache a failure: a declined or wrong-network connect used to be stored
+    // here as null, so every later play on the page reported no-wallet until
+    // resetWallet() was called. A success is still cached via _sharedWallet.
     if (!_walletConnecting) {
-      _walletConnecting = JubJub.connectBrowserWallet(this._activeNetwork()).catch(() => null);
+      _walletConnecting = JubJub.connectBrowserWallet(this._activeNetwork());
     }
-    const wallet = await _walletConnecting;
-    if (!wallet) throw new Error('no-wallet');
+    let wallet: WalletLike | null;
+    try {
+      wallet = await _walletConnecting;
+    } catch (connectErr) {
+      _walletConnecting = null;
+      throw connectErr;
+    }
+    if (!wallet) {
+      _walletConnecting = null;
+      throw new Error('no-wallet');
+    }
 
     this.wallet = new Wallet(wallet);
     return this.wallet.getAddress()!;
@@ -785,6 +852,27 @@ export class JubJub extends EventEmitter {
         address = await this._ensureWallet();
       } catch (walletErr) {
         // B: no wallet / connect failed → FAIL CLOSED (gate, no free play).
+        // Name the actual problem when it is one the viewer can act on:
+        // a wallet left on another network, or a connect they declined.
+        if (_isChainMismatch(walletErr)) {
+          const label = chainForNetwork(this._activeNetwork()).label;
+          this._gatePayment(
+            `Switch your wallet to ${label}`,
+            walletErr instanceof Error && walletErr.message
+              ? walletErr.message
+              : `Your wallet is on another network. Switch it to ${label} and retry.`,
+            walletErr,
+          );
+          return;
+        }
+        if (_isUserRejection(walletErr)) {
+          this._gatePayment(
+            'Wallet connection declined',
+            'Approve the connection request in your wallet to start watching.',
+            walletErr,
+          );
+          return;
+        }
         this._gatePayment(
           'Connect a wallet to watch',
           'A wallet is required to pay for streaming. Connect one and retry.',
