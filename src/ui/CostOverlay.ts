@@ -14,7 +14,7 @@ export class CostOverlay {
   private costEl: HTMLSpanElement;
   private timeEl: HTMLSpanElement;
 
-  constructor(video: HTMLVideoElement, position: Position = 'bottom-right') {
+  constructor(video: HTMLVideoElement, position: Position = 'bottom-right', claimUrl?: string) {
     // Ensure the video has a positioned wrapper so the overlay is
     // scoped to THIS video, not the page body.
     let wrapper = video.parentElement;
@@ -68,6 +68,23 @@ export class CostOverlay {
     this.container.appendChild(sep);
     this.container.appendChild(this.timeEl);
     this.container.appendChild(brand);
+
+    // "This is my video": the way a rights holder tells JubJub a piece they
+    // own is being monetised by someone else. JubJub does not host the
+    // bytes, so the claim is about the money: once confirmed, every payment
+    // the piece earns is held until a person decides. Always visible while
+    // the chip is, so it does not depend on a payment failing.
+    if (claimUrl) {
+      const claim = document.createElement('a');
+      claim.href = claimUrl;
+      claim.target = '_blank';
+      claim.rel = 'noopener noreferrer';
+      claim.setAttribute('data-jubjub-claim', 'true');
+      claim.style.cssText =
+        'font-size:9px;opacity:0.5;color:#fff;text-decoration:underline;margin-left:6px;';
+      claim.textContent = 'This is my video';
+      this.container.appendChild(claim);
+    }
 
     wrapper.appendChild(this.container);
   }
