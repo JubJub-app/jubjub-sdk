@@ -14,6 +14,7 @@ import { Session } from './core/Session';
 import { CostTracker } from './core/CostTracker';
 import { PlaybackUrlRefresher } from './core/PlaybackUrlRefresher';
 import { CostOverlay } from './ui/CostOverlay';
+import { claimUrlFor } from './claim';
 import type {
   JubJubOptions,
   JubJubInitConfig,
@@ -147,6 +148,7 @@ function _createPaymentGate(
   onRetry: () => void,
   titleText?: string,
   subText?: string,
+  claimUrl?: string,
 ): { remove: () => void } {
   const el = document.createElement('div');
   el.setAttribute('data-jubjub-gate', 'true');
@@ -174,6 +176,19 @@ function _createPaymentGate(
     'cursor:pointer;border:0;border-radius:8px;padding:10px 18px;margin-top:4px;' +
     'font-size:14px;font-weight:600;background:#fff;color:#000;font-family:inherit;';
   el.appendChild(btn);
+
+  // The rights holder's exit from the paywall: see CostOverlay for why.
+  if (claimUrl) {
+    const claim = document.createElement('a');
+    claim.href = claimUrl;
+    claim.target = '_blank';
+    claim.rel = 'noopener noreferrer';
+    claim.setAttribute('data-jubjub-claim', 'true');
+    claim.style.cssText =
+      'font-size:12px;opacity:0.7;color:#fff;text-decoration:underline;margin-top:6px;';
+    claim.textContent = 'This is my video';
+    el.appendChild(claim);
+  }
 
   // Insert into a positioned wrapper (mirrors _createLoader).
   let wrapper = video.parentElement;
@@ -626,7 +641,7 @@ export class JubJub extends EventEmitter {
           // FAIL CLOSED: payment was not secured. Keep the video paused, show
           // the retry gate, and re-arm play→retry. Do NOT call play().
           console.warn('[JubJub] Payment not secured — video gated (no free play).');
-          currentGate = _createPaymentGate(video, run, gateTitle, gateSub);
+          currentGate = _createPaymentGate(video, run, gateTitle, gateSub, claimUrlFor(contentId));
           armPlay();
           return;
         }
@@ -801,6 +816,7 @@ export class JubJub extends EventEmitter {
       },
       'Stream paused',
       'Your paid session ended. Start a new session to keep watching.',
+      claimUrlFor(this.options.contentId),
     );
     const err = new Error('gated stream expired') as Error & { sub?: string };
     err.sub = 'Your paid session ended.';
@@ -1052,6 +1068,7 @@ export class JubJub extends EventEmitter {
         this.overlay = new CostOverlay(
           video,
           this.options.overlayPosition ?? 'bottom-right',
+          claimUrlFor(contentId),
         );
       }
 
