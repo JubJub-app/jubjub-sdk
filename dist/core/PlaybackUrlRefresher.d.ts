@@ -55,6 +55,14 @@ export declare class PlaybackUrlRefresher {
     private suspended;
     private refreshing;
     private isHls;
+    /**
+     * Set when a refresh answered 402 (allowance or balance below the minimum).
+     * Nothing automatic may re-resolve while it is set — not the timer, not a
+     * media error, not a play — or a viewer who cannot pay is re-asked in a
+     * loop. Only an explicit refreshNow('manual') (the gate's retry, after the
+     * viewer approved or topped up) lifts it.
+     */
+    private fundingBlocked;
     constructor(video: HTMLVideoElement, api: ApiClient, sessionId: string, cb: RefresherCallbacks);
     /**
      * Begin managing expiry for the URL already set on the element.
@@ -67,7 +75,7 @@ export declare class PlaybackUrlRefresher {
      * Returns true on success, false if it failed (and gated via onFailure).
      * Safe to call from the proactive timer, the error handler, or a user retry.
      */
-    refreshNow(_reason?: RefreshReason): Promise<boolean>;
+    refreshNow(reason?: RefreshReason): Promise<boolean>;
     /** Tear down timers + listeners (called on session end / disconnect). */
     stop(): void;
     private _schedule;

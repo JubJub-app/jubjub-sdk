@@ -6,6 +6,23 @@ export { Session } from './core/Session';
 export { CostTracker } from './core/CostTracker';
 export { CostOverlay } from './ui/CostOverlay';
 export { EventEmitter } from './EventEmitter';
+export {
+  FundingRequiredError,
+  FundingUnverifiableError,
+  fundingMessage,
+  formatMicroUsdc,
+  parseFundingError,
+  isFundingRequiredError,
+  isFundingUnverifiableError,
+} from './fundingErrors';
+export type { FundingRequiredReason } from './fundingErrors';
+export {
+  MEMBER_FALLBACK_NAME,
+  publicProfileFrom,
+  stripInternalIdentity,
+  redactEmails,
+} from './privacy';
+export type { PublicProfile } from './privacy';
 export type {
   JubJubOptions,
   JubJubInitConfig,

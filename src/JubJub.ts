@@ -7,6 +7,13 @@ import {
   isUserRejection,
 } from './walletChain';
 import { EventEmitter } from './EventEmitter';
+import {
+  FundingRequiredError,
+  FundingUnverifiableError,
+  fundingMessage,
+  isFundingRequiredError,
+  isFundingUnverifiableError,
+} from './fundingErrors';
 import { ApiClient } from './api/ApiClient';
 import { Wallet } from './core/Wallet';
 import { Approval } from './core/Approval';
@@ -79,11 +86,21 @@ let _injectedProvider: any | null = null;
  */
 let _sessionToken: string | null = null;
 
+/**
+ * Set when the backend answered 402 insufficient_allowance: the NEXT attempt's
+ * approval step (the gate's retry, or the host calling play again) approves
+ * this spender -- the one the backend named, never a hard-coded address -- in
+ * the same wallet flow as the router approval. Cleared once approved.
+ */
+let _pendingSpenderApproval:
+  | { spender: string; requiredMicro: number; token: string | null; chainId: number | null }
+  | null = null;
+
 // ---------------------------------------------------------------------------
 // Defaults
 // ---------------------------------------------------------------------------
 const DEFAULTS: Required<
-  Omit<JubJubOptions, 'contentId' | 'wallet' | 'sessionToken' | 'onCostUpdate' | 'onSessionStart' | 'onSessionEnd' | 'onError' | 'onWalletConnected'>
+  Omit<JubJubOptions, 'contentId' | 'wallet' | 'sessionToken' | 'onCostUpdate' | 'onSessionStart' | 'onSessionEnd' | 'onError' | 'onWalletConnected' | 'onFundingRequired'>
 > & { contentId: string | undefined; wallet: any } = {
   contentId: undefined,
   wallet: undefined,
@@ -148,6 +165,7 @@ function _createPaymentGate(
   onRetry: () => void,
   titleText?: string,
   subText?: string,
+  buttonText?: string,
   claimUrl?: string,
 ): { remove: () => void } {
   const el = document.createElement('div');
@@ -171,7 +189,7 @@ function _createPaymentGate(
 
   const btn = document.createElement('button');
   btn.type = 'button';
-  btn.textContent = 'Retry payment';
+  btn.textContent = buttonText || 'Retry payment';
   btn.style.cssText =
     'cursor:pointer;border:0;border-radius:8px;padding:10px 18px;margin-top:4px;' +
     'font-size:14px;font-weight:600;background:#fff;color:#000;font-family:inherit;';
@@ -265,6 +283,7 @@ export class JubJub extends EventEmitter {
     if (options.onSessionEnd) this.on('session:end', options.onSessionEnd);
     if (options.onError) this.on('error', options.onError);
     if (options.onWalletConnected) this.on('wallet:connected', options.onWalletConnected);
+    if (options.onFundingRequired) this.on('funding:required', options.onFundingRequired);
   }
 
   // =========================================================================
@@ -273,6 +292,15 @@ export class JubJub extends EventEmitter {
 
   /** The package.json version this bundle was built from. */
   static readonly version: string = SDK_VERSION;
+
+  /**
+   * The typed funding errors, reachable from the UMD global
+   * (`err instanceof JubJub.FundingRequiredError`) as well as the ESM export.
+   */
+  static readonly FundingRequiredError = FundingRequiredError;
+  static readonly FundingUnverifiableError = FundingUnverifiableError;
+  /** The gate's exact title/sub/button text for a funding error. */
+  static readonly fundingMessage = fundingMessage;
 
   /**
    * Initialise the SDK. Call once per page. Auto-discovers video elements
@@ -544,9 +572,11 @@ export class JubJub extends EventEmitter {
     const creator = video.dataset.jubjubCreator;
     if (!contentId && !creator) return;
 
+    // `creator` is the developer's own data-jubjub-creator input (often an
+    // email). It is sent to JubJub to register the piece and never logged.
     console.log('[JubJub] Prepared video — waiting for play event', {
       contentId: contentId || '(auto-register)',
-      creator: creator || '(pre-registered)',
+      creator: creator ? '(set)' : '(pre-registered)',
       src: (video.src || '').slice(0, 60),
     });
 
@@ -584,6 +614,7 @@ export class JubJub extends EventEmitter {
         let gated = false;
         let gateTitle: string | undefined;
         let gateSub: string | undefined;
+        let gateAction: string | undefined;
         try {
           if (contentId) {
             sdk = JubJub.play(contentId, video);
@@ -622,6 +653,7 @@ export class JubJub extends EventEmitter {
             sdk!.on('payment:required', (e: any) => {
               gateTitle = e?.message || gateTitle;
               gateSub = e?.sub || gateSub;
+              gateAction = e?.action || gateAction;
               done(true);
             });
             sdk!.on('error', () => done(false));
@@ -641,7 +673,14 @@ export class JubJub extends EventEmitter {
           // FAIL CLOSED: payment was not secured. Keep the video paused, show
           // the retry gate, and re-arm play→retry. Do NOT call play().
           console.warn('[JubJub] Payment not secured — video gated (no free play).');
-          currentGate = _createPaymentGate(video, run, gateTitle, gateSub, claimUrlFor(contentId));
+          currentGate = _createPaymentGate(
+            video,
+            run,
+            gateTitle,
+            gateSub,
+            gateAction,
+            claimUrlFor(contentId),
+          );
           armPlay();
           return;
         }
@@ -735,7 +774,7 @@ export class JubJub extends EventEmitter {
         console.log('[JubJub] Using cached content_id:', cached);
         contentId = cached;
       } else {
-        console.log('[JubJub] Registering content...', { creator: info.creator, title: info.title });
+        console.log('[JubJub] Registering content...', { title: info.title });
         const result = await this.api.registerContent(_platformKey, info);
         contentId = result.content_id;
         console.log('[JubJub] Registered:', contentId, result.duplicate ? '(duplicate)' : '(new)');
@@ -762,13 +801,37 @@ export class JubJub extends EventEmitter {
    * pre-payment failure (load/price, wallet, viewer-session, approval,
    * streaming-session) so no JubJub-tagged video plays without secured payment.
    */
-  private _gatePayment(title: string, sub: string, cause?: unknown): void {
+  private _gatePayment(title: string, sub: string, cause?: unknown, action?: string): void {
     const detail =
       cause instanceof Error ? cause.message : cause != null ? String(cause) : '';
     console.warn(`[JubJub] Gating playback (no free play): ${title}`, detail);
-    const err = new Error(title) as Error & { sub?: string };
+    const err = new Error(title) as Error & { sub?: string; action?: string; cause?: unknown };
     err.sub = sub;
+    if (action) err.action = action;
+    if (cause !== undefined) err.cause = cause;
     this.emit('payment:required', err);
+  }
+
+  /**
+   * Tell the host about a typed funding error before gating. 402 ->
+   * 'funding:required' (FundingRequiredError), 503 -> 'funding:unverifiable'
+   * (FundingUnverifiableError, retryable). On insufficient_allowance the next
+   * attempt approves the spender the backend named.
+   */
+  private _announceFunding(err: FundingRequiredError | FundingUnverifiableError): void {
+    if (isFundingRequiredError(err)) {
+      if (err.reason === 'insufficient_allowance' && err.spender) {
+        _pendingSpenderApproval = {
+          spender: err.spender,
+          requiredMicro: err.requiredMicro,
+          token: err.token,
+          chainId: err.chainId,
+        };
+      }
+      this.emit('funding:required', err);
+    } else {
+      this.emit('funding:unverifiable', err);
+    }
   }
 
   /**
@@ -798,26 +861,57 @@ export class JubJub extends EventEmitter {
       '[JubJub] Gated stream could not be refreshed — paused (fail closed).',
       cause instanceof Error ? cause.message : cause,
     );
+    const funding =
+      isFundingRequiredError(cause) || isFundingUnverifiableError(cause) ? cause : null;
+    if (funding) this._announceFunding(funding);
     // Don't stack gates: a failed retry re-enters here, but the existing gate
     // stays up and we simply no-op.
     if (this.midPlaybackGate) return;
+    const text = funding ? fundingMessage(funding) : null;
     this.midPlaybackGate = _createPaymentGate(
       video,
       () => {
-        void this.refresher?.refreshNow('manual').then((ok) => {
-          if (ok) {
-            this.midPlaybackGate?.remove();
-            this.midPlaybackGate = null;
-            video.play().catch(() => {});
-          }
-          // On failure the refresher re-invokes _gateMidPlayback, which no-ops
-          // because midPlaybackGate is still set — the gate stays. Fail closed.
-        });
+        // A 402 allowance stop: approve the backend-named spender first, then
+        // ask for a URL once. The refresher itself never retries a 402.
+        const approval = this.approval;
+        const approveFirst =
+          isFundingRequiredError(cause) &&
+          cause.reason === 'insufficient_allowance' &&
+          cause.spender &&
+          approval
+            ? approval
+                .ensureSpenderApproved(cause.spender, cause.requiredMicro)
+                .then(() => { _pendingSpenderApproval = null; })
+            : Promise.resolve();
+        void approveFirst
+          .then(() => this.refresher?.refreshNow('manual') ?? false)
+          .catch((approveErr) => {
+            console.warn('[JubJub] USDC approval not completed', approveErr);
+            return false;
+          })
+          .then((ok) => {
+            if (ok) {
+              this.midPlaybackGate?.remove();
+              this.midPlaybackGate = null;
+              video.play().catch(() => {});
+            }
+            // On failure the refresher re-invokes _gateMidPlayback, which no-ops
+            // because midPlaybackGate is still set — the gate stays. Fail closed.
+          });
       },
-      'Stream paused',
-      'Your paid session ended. Start a new session to keep watching.',
+      text?.title ?? 'Stream paused',
+      text?.sub ?? 'Your paid session ended. Start a new session to keep watching.',
+      text?.action,
       claimUrlFor(this.options.contentId),
     );
+    if (text) {
+      const err = new Error(text.title) as Error & { sub?: string; action?: string; cause?: unknown };
+      err.sub = text.sub;
+      err.action = text.action;
+      err.cause = cause;
+      this.emit('payment:required', err);
+      return;
+    }
     const err = new Error('gated stream expired') as Error & { sub?: string };
     err.sub = 'Your paid session ended.';
     this.emit('payment:required', err);
@@ -971,6 +1065,20 @@ export class JubJub extends EventEmitter {
           },
         );
         didApprove = await this.approval.ensureApproved();
+        // A previous attempt was refused 402 insufficient_allowance: approve
+        // the spender the backend named, on the same chain + token only.
+        const pending = _pendingSpenderApproval;
+        if (
+          pending &&
+          (pending.chainId == null || pending.chainId === this.contentInfo.chain_id) &&
+          (pending.token == null ||
+            pending.token.toLowerCase() === String(this.contentInfo.usdc_address).toLowerCase())
+        ) {
+          if (await this.approval.ensureSpenderApproved(pending.spender, pending.requiredMicro)) {
+            didApprove = true;
+          }
+          _pendingSpenderApproval = null;
+        }
       } catch (approvalErr) {
         // FAIL CLOSED: approval rejected by the user, approve tx failed, the
         // allowance could not be verified, or the chain/RPC was unusable. Do
@@ -997,6 +1105,15 @@ export class JubJub extends EventEmitter {
           this.contentInfo?.playback_grant,
         );
       } catch (streamErr) {
+        // 402 / 503 funding: say exactly what the viewer must do. The session
+        // token is fine here -- the backend authenticated it before checking
+        // funds -- so it is NOT forgotten.
+        if (isFundingRequiredError(streamErr) || isFundingUnverifiableError(streamErr)) {
+          this._announceFunding(streamErr);
+          const text = fundingMessage(streamErr);
+          this._gatePayment(text.title, text.sub, streamErr, text.action);
+          return;
+        }
         // D: streaming-session create failed (incl. on-chain createSession
         // revert) → FAIL CLOSED (gate). Payment is not yet secured here.
         // A page-shared token that the backend refused (expired 24h TTL,

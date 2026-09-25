@@ -1,4 +1,6 @@
 import type { ContentInfo, SearchParams, SearchResponse } from '../types';
+import { parseFundingError } from '../fundingErrors';
+import { publicProfileFrom, redactEmails, stripInternalIdentity } from '../privacy';
 
 export class ApiClient {
   private apiUrl: string;
@@ -69,12 +71,16 @@ export class ApiClient {
       }
       // If we can't parse the ID, still don't throw — the content exists,
       // we just can't extract its ID. Fall through to the error below.
-      throw new Error(`Content already registered but ID could not be parsed: ${detail}`);
+      // The body may echo the creator email the page registered with; this
+      // message reaches the console and the host's payment:required event.
+      throw new Error(
+        `Content already registered but ID could not be parsed: ${redactEmails(detail)}`,
+      );
     }
 
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(`Register content failed: ${res.status} ${text}`);
+      throw new Error(`Register content failed: ${res.status} ${redactEmails(text)}`);
     }
 
     return res.json();
@@ -89,7 +95,7 @@ export class ApiClient {
     if (!res.ok) {
       throw new Error(`Playback info failed: ${res.status}`);
     }
-    return res.json();
+    return toContentInfo(await res.json());
   }
 
   /**
@@ -191,7 +197,16 @@ export class ApiClient {
     if (!res.ok) {
       throw new Error(`JubJub search failed (${res.status})`);
     }
-    return (await res.json()) as SearchResponse;
+    const data = (await res.json()) as SearchResponse;
+    // The server strips owner identifiers; scrub again so an older backend (or
+    // a field added later) can never hand a creator's profile id or email to
+    // the host page through a card's open index signature.
+    return {
+      ...data,
+      results: Array.isArray(data?.results)
+        ? data.results.map((c) => stripInternalIdentity(c))
+        : [],
+    };
   }
 
   // -- Authenticated endpoints (jj_ Bearer token) --
@@ -227,8 +242,13 @@ export class ApiClient {
       }),
     });
     if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Create session failed: ${res.status} ${text}`);
+      const text = await res.text().catch(() => '');
+      // 402 (allowance/balance below the minimum) and 503 (chain unreadable)
+      // arrive typed so the SDK and host can say what to do about them.
+      throw (
+        parseFundingError(res.status, text) ??
+        new Error(`Create session failed: ${res.status} ${text}`)
+      );
     }
     const data = await res.json();
     return {
@@ -256,8 +276,13 @@ export class ApiClient {
       { method: 'POST', headers: this.authHeaders() },
     );
     if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Playback URL failed: ${res.status} ${text}`);
+      const text = await res.text().catch(() => '');
+      // Same 402/503 shapes as session create: the viewer's allowance or
+      // balance can drop below the minimum mid-session.
+      throw (
+        parseFundingError(res.status, text) ??
+        new Error(`Playback URL failed: ${res.status} ${text}`)
+      );
     }
     const data = await res.json();
     return {
@@ -319,4 +344,30 @@ export class ApiClient {
       blob,
     );
   }
+}
+
+/**
+ * Playback info as the SDK exposes it (content:loaded, getContentInfo()).
+ * An explicit whitelist, not the raw body: whatever else the backend returns
+ * -- including, on an older backend, the creator's profile_id or email --
+ * never reaches the host page. The creator is carried only as a public
+ * profile (display name, avatar, handle, member_ref).
+ */
+export function toContentInfo(raw: any): ContentInfo {
+  const r = raw && typeof raw === 'object' ? raw : {};
+  const info: ContentInfo = {
+    content_id: r.content_id,
+    title: typeof r.title === 'string' ? r.title : null,
+    price_per_minute_usdc: r.price_per_minute_usdc,
+    content_contract: r.content_contract ?? null,
+    payment_router: r.payment_router,
+    usdc_address: r.usdc_address,
+    chain_id: r.chain_id,
+  };
+  if ('playback_grant' in r) info.playback_grant = r.playback_grant ?? null;
+  if (typeof r.chain_name === 'string') info.chain_name = r.chain_name;
+  if ('gated' in r) info.gated = r.gated === true;
+  const creator = publicProfileFrom(r, 'creator');
+  if (creator) info.creator = creator;
+  return info;
 }

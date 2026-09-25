@@ -48,5 +48,17 @@ export declare class Approval {
     private static _boundedStandingAllowance;
     isApproved(): Promise<boolean>;
     approve(): Promise<void>;
+    /**
+     * Make sure `spender` may pull at least `requiredMicro` USDC from the viewer.
+     * Used when the backend answers a session create or URL refresh with 402
+     * insufficient_allowance: the spender comes from THAT response (the creator
+     * pool the backend actually draws against), never a hard-coded address.
+     *
+     * Same bounded standing amount as approve() — the larger of the standing
+     * allowance and `requiredMicro`, and never above the ceiling. Returns true
+     * when an approve transaction was sent, false when the allowance already
+     * covered it.
+     */
+    ensureSpenderApproved(spender: string, requiredMicro: number): Promise<boolean>;
     ensureApproved(): Promise<boolean>;
 }

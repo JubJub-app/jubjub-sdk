@@ -78,3 +78,11 @@ export declare class ApiClient {
     closeSession(sessionId: string, playbackSeconds: number): Promise<void>;
     beaconClose(sessionId: string, walletAddress: string, playbackSeconds: number): void;
 }
+/**
+ * Playback info as the SDK exposes it (content:loaded, getContentInfo()).
+ * An explicit whitelist, not the raw body: whatever else the backend returns
+ * -- including, on an older backend, the creator's profile_id or email --
+ * never reaches the host page. The creator is carried only as a public
+ * profile (display name, avatar, handle, member_ref).
+ */
+export declare function toContentInfo(raw: any): ContentInfo;

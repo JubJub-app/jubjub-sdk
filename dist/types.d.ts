@@ -1,3 +1,5 @@
+import type { FundingRequiredError } from './fundingErrors';
+import type { PublicProfile } from './privacy';
 export interface JubJubInitConfig {
     platformKey: string;
     apiUrl?: string;
@@ -35,6 +37,11 @@ export interface JubJubInitConfig {
     sessionToken?: string;
 }
 export interface ContentRegistration {
+    /**
+     * Email or wallet address of the creator, supplied by the integrating
+     * developer. Sent to JubJub to register the piece and NEVER re-exposed:
+     * it is not logged, emitted, written to the DOM or returned to viewers.
+     */
     creator: string;
     title: string;
     mediaUrl: string;
@@ -56,6 +63,13 @@ export interface JubJubOptions {
     onSessionEnd?: (summary: SessionSummary) => void;
     onError?: (error: Error) => void;
     onWalletConnected?: (address: string) => void;
+    /**
+     * The backend refused to open (or keep refreshing) a session because the
+     * viewer's USDC allowance or balance is below the minimum (HTTP 402).
+     * Same payload as the 'funding:required' event. The built-in gate is shown
+     * regardless; a host rendering its own UI can use fundingMessage(err).
+     */
+    onFundingRequired?: (error: FundingRequiredError) => void;
     /** Per-instance override of the page-level token — see JubJubInitConfig.sessionToken. */
     sessionToken?: string;
 }
@@ -103,6 +117,13 @@ export interface ContentInfo {
      * the backend and sets it as the source. This payload carries no stream URL.
      */
     gated?: boolean;
+    /**
+     * The creator as a viewer may see them: public display name (else
+     * "JubJub member"), avatar, handle, opaque member_ref. Absent when the
+     * backend says nothing about the creator. Never a profile id or email:
+     * those are internal and are dropped by the SDK even if a backend sends them.
+     */
+    creator?: PublicProfile;
 }
 export interface SessionSummary {
     sessionId: string;
@@ -141,7 +162,8 @@ export interface SearchParams {
     includeUnanalysed?: boolean;
 }
 /** One discoverable catalogue card. Owner identifiers are stripped
- *  server-side; thumbnail_url is resolved server-side when available. */
+ *  server-side AND again by the SDK (any profile id / email key is removed);
+ *  thumbnail_url is resolved server-side when available. */
 export interface SearchResultCard {
     content_id: string;
     title?: string;

@@ -247,6 +247,51 @@ export class Approval {
     await this.publicClient.waitForTransactionReceipt({ hash });
   }
 
+  /**
+   * Make sure `spender` may pull at least `requiredMicro` USDC from the viewer.
+   * Used when the backend answers a session create or URL refresh with 402
+   * insufficient_allowance: the spender comes from THAT response (the creator
+   * pool the backend actually draws against), never a hard-coded address.
+   *
+   * Same bounded standing amount as approve() — the larger of the standing
+   * allowance and `requiredMicro`, and never above the ceiling. Returns true
+   * when an approve transaction was sent, false when the allowance already
+   * covered it.
+   */
+  async ensureSpenderApproved(spender: string, requiredMicro: number): Promise<boolean> {
+    if (!/^0x[0-9a-fA-F]{40}$/.test(spender)) {
+      throw new Error(`Invalid spender address from the backend: ${spender}`);
+    }
+    const owner = this.wallet.getAddress();
+    if (!owner) throw new Error('No wallet client');
+    const required = BigInt(Math.ceil(Math.max(0, Number(requiredMicro) || 0)));
+    if (required > MAX_STREAMING_ALLOWANCE) {
+      throw new Error(
+        `Refusing to approve ${Number(required) / 10 ** USDC_DECIMALS} USDC — ` +
+          `above the $${MAX_STREAMING_ALLOWANCE_USD} ceiling.`,
+      );
+    }
+    const current = await this.publicClient.readContract({
+      address: this.usdc,
+      abi: ERC20_ABI,
+      functionName: 'allowance',
+      args: [owner as Address, spender as Address],
+    });
+    if (current >= required && required > 0n) return false;
+
+    const client = this.wallet.getClient();
+    if (!client) throw new Error('No wallet client');
+    const amount = this.standingAllowance > required ? this.standingAllowance : required;
+    const hash = await client.writeContract({
+      address: this.usdc,
+      abi: ERC20_ABI,
+      functionName: 'approve',
+      args: [spender as Address, amount],
+    });
+    await this.publicClient.waitForTransactionReceipt({ hash });
+    return true;
+  }
+
   async ensureApproved(): Promise<boolean> {
     if (await this.isApproved()) return false;
     await this.approve();

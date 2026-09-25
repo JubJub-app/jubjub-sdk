@@ -1,4 +1,5 @@
 import type { ApiClient } from '../api/ApiClient';
+import { isFundingRequiredError } from '../fundingErrors';
 
 /**
  * Fraction of the TTL at which we proactively re-resolve. 0.8 means a 120s URL
@@ -70,6 +71,14 @@ export class PlaybackUrlRefresher {
   private suspended = false;
   private refreshing = false;
   private isHls = false;
+  /**
+   * Set when a refresh answered 402 (allowance or balance below the minimum).
+   * Nothing automatic may re-resolve while it is set — not the timer, not a
+   * media error, not a play — or a viewer who cannot pay is re-asked in a
+   * loop. Only an explicit refreshNow('manual') (the gate's retry, after the
+   * viewer approved or topped up) lifts it.
+   */
+  private fundingBlocked = false;
 
   constructor(
     video: HTMLVideoElement,
@@ -132,8 +141,9 @@ export class PlaybackUrlRefresher {
    * Returns true on success, false if it failed (and gated via onFailure).
    * Safe to call from the proactive timer, the error handler, or a user retry.
    */
-  async refreshNow(_reason: RefreshReason = 'manual'): Promise<boolean> {
+  async refreshNow(reason: RefreshReason = 'manual'): Promise<boolean> {
     if (this.stopped || this.refreshing) return false;
+    if (this.fundingBlocked && reason !== 'manual') return false;
     this.refreshing = true;
     if (this.timer) {
       clearTimeout(this.timer);
@@ -145,6 +155,7 @@ export class PlaybackUrlRefresher {
       );
       if (!url) throw new Error('empty playback url');
       if (this.stopped) return false;
+      this.fundingBlocked = false;
       await this._swapSource(url);
       this._schedule(expiresInSeconds);
       this.cb.onRefreshed?.(url);
@@ -157,6 +168,9 @@ export class PlaybackUrlRefresher {
       } catch {
         /* ignore */
       }
+      // 402: stop the loop until the viewer acts. No timer is re-armed on
+      // any failure, and this also silences the media-error / play paths.
+      if (isFundingRequiredError(err)) this.fundingBlocked = true;
       if (!this.stopped) this.cb.onFailure(err);
       return false;
     } finally {
@@ -192,7 +206,7 @@ export class PlaybackUrlRefresher {
       clearTimeout(this.timer);
       this.timer = null;
     }
-    if (this.stopped || this.suspended) return;
+    if (this.stopped || this.suspended || this.fundingBlocked) return;
     const ttl =
       Number.isFinite(expiresInSeconds) && expiresInSeconds > 0
         ? expiresInSeconds
@@ -226,13 +240,13 @@ export class PlaybackUrlRefresher {
 
   /** Playback resumed after the end — lift the suspension and re-resolve. */
   private _onPlay(): void {
-    if (this.stopped || !this.suspended) return;
+    if (this.stopped || !this.suspended || this.fundingBlocked) return;
     this.suspended = false;
     void this.refreshNow('manual');
   }
 
   private _onMediaError(): void {
-    if (this.stopped || this.suspended || this.refreshing) return;
+    if (this.stopped || this.suspended || this.refreshing || this.fundingBlocked) return;
     // Genuine non-expiry errors also funnel here; they will gate after a failed
     // re-resolve, which is the correct fail-closed outcome.
     void this.refreshNow('error');

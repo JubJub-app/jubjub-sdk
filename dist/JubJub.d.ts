@@ -1,5 +1,6 @@
 import { type NetworkFlag } from './chains';
 import { EventEmitter } from './EventEmitter';
+import { FundingRequiredError, FundingUnverifiableError, fundingMessage } from './fundingErrors';
 import type { JubJubOptions, JubJubInitConfig, ContentRegistration, ContentInfo, SessionSummary, CostInfo, WalletLike, SearchParams, SearchResponse } from './types';
 export declare class JubJub extends EventEmitter {
     private options;
@@ -20,6 +21,14 @@ export declare class JubJub extends EventEmitter {
     constructor(options?: JubJubOptions);
     /** The package.json version this bundle was built from. */
     static readonly version: string;
+    /**
+     * The typed funding errors, reachable from the UMD global
+     * (`err instanceof JubJub.FundingRequiredError`) as well as the ESM export.
+     */
+    static readonly FundingRequiredError: typeof FundingRequiredError;
+    static readonly FundingUnverifiableError: typeof FundingUnverifiableError;
+    /** The gate's exact title/sub/button text for a funding error. */
+    static readonly fundingMessage: typeof fundingMessage;
     /**
      * Initialise the SDK. Call once per page. Auto-discovers video elements
      * with `data-jubjub-*` attributes and attaches payment flows.
@@ -87,6 +96,13 @@ export declare class JubJub extends EventEmitter {
      * streaming-session) so no JubJub-tagged video plays without secured payment.
      */
     private _gatePayment;
+    /**
+     * Tell the host about a typed funding error before gating. 402 ->
+     * 'funding:required' (FundingRequiredError), 503 -> 'funding:unverifiable'
+     * (FundingUnverifiableError, retryable). On insufficient_allowance the next
+     * attempt approves the spender the backend named.
+     */
+    private _announceFunding;
     /**
      * Tier-2 mid-playback fail-closed gate. Fired when a gated signed URL can no
      * longer be refreshed (session settled/closed, 403/404). The refresher has
