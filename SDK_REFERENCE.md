@@ -339,6 +339,16 @@ wallet then lists is the one used. If it is still empty the gate says
 reload. The gate's button runs the same sequence. `requestAuthorisedAccount`
 and `reconfirmAuthorisedAccount` are exported.
 
+2.1.5: `POST /v2/streaming/sessions` answers 409 with a machine-readable body
+`{reason, content_id, message, ...}` when the piece cannot be streamed for
+money. `reason: "ownership_pending"` (no ownership contract yet; the body
+also carries `ownership_status` and `ownership_reason`) and
+`reason: "content_not_sellable"` both map to `ContentNotPlayableError`, and
+the gate says "This video isn't ready for paid streaming yet" (or "watched on
+its own platform" when JubJub holds no file). The older backend's bare 400
+"has no ownership contract deployed" is read the same way, so the page never
+calls that a payment-service outage.
+
 ### Static shorthand
 
 ```javascript
