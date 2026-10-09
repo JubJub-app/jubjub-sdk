@@ -24,7 +24,14 @@ export {
   unauthorisedAccountError,
   isWalletError,
   UNAUTHORISED_ACCOUNT_CODE,
+  STALE_CONNECTION_CODE,
 } from './walletErrors';
+export {
+  requestAuthorisedAccount,
+  reconfirmAuthorisedAccount,
+  requestFreshPermission,
+  staleConnectionError,
+} from './walletAuthorise';
 export type { WalletErrorKind } from './walletErrors';
 export {
   ContentNotPlayableError,

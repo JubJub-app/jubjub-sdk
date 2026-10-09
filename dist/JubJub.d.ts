@@ -116,6 +116,13 @@ export declare class JubJub extends EventEmitter {
      * provider that cannot answer eth_accounts: proceed, the signature decides.
      * Not listed: ask once more (eth_requestAccounts), then re-check.
      */
+    /**
+     * Before signing: is this origin still authorised for `address` on the
+     * provider that connected it? No provider (a BYO wallet client) or a
+     * provider that cannot answer eth_accounts: proceed, the signature decides.
+     * Not listed: one fresh permission prompt (wallet_requestPermissions), then
+     * re-check; the account the wallet now lists is the one to sign with.
+     */
     private _confirmAccountAuthorised;
     private _gatePayment;
     /**

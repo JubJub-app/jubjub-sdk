@@ -35,6 +35,7 @@ export type WalletErrorKind =
   | 'pending'
   | 'unsupported'
   | 'disconnected'
+  | 'stale_connection'
   | 'chain_mismatch'
   | 'no_account'
   | 'no_reply'
@@ -42,6 +43,8 @@ export type WalletErrorKind =
 
 /** Error code the SDK attaches when its own eth_accounts check fails. */
 export const UNAUTHORISED_ACCOUNT_CODE = 'JUBJUB_ACCOUNT_UNAUTHORISED';
+/** Error code for a wallet connection record that a fresh permission prompt did not repair (walletAuthorise.ts). */
+export const STALE_CONNECTION_CODE = 'JUBJUB_WALLET_STALE_CONNECTION';
 
 /**
  * The numeric code of a wallet error, wherever the wallet put it. MetaMask
@@ -75,6 +78,7 @@ export function classifyWalletError(err: unknown): WalletErrorKind {
   const code = walletErrorCode(err);
   const text = textOf(err);
 
+  if (code === STALE_CONNECTION_CODE) return 'stale_connection';
   if (code === UNAUTHORISED_ACCOUNT_CODE) return 'unauthorised';
   if (code === -32002 || /already pending|request .*pending/i.test(text)) return 'pending';
   if (code === 4001 || isUserRejection(err)) return 'rejected';
@@ -129,6 +133,14 @@ export function walletGateMessage(
       return {
         title: 'This wallet cannot sign messages',
         sub: 'JubJub needs a signature to confirm the wallet is yours. Use a wallet that supports personal_sign.',
+        action: 'Try again',
+      };
+    case 'stale_connection':
+      return {
+        title: 'Reconnect your wallet to this site',
+        sub:
+          `Your wallet remembers ${site} but lists no account for it, and a fresh connection request did not fix that. ` +
+          `Open the wallet, disconnect ${ctx.host || 'this site'}, reload this page, then connect again.`,
         action: 'Try again',
       };
     case 'disconnected':
