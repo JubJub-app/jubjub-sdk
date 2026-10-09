@@ -299,6 +299,36 @@ provider (for example injected first, WalletConnect later). Call
 `JubJub.resetWallet()` first so the page-shared wallet from the previous
 provider is forgotten; otherwise the SDK keeps signing with it.
 
+### Several wallets, and what the gate says when the wallet refuses (2.1.3)
+
+With more than one wallet extension installed, `window.ethereum` is whichever
+one injected last, or a multiplexer that forwards each request to a wallet of
+its own choosing. `eth_requestAccounts` could then be answered by one wallet
+and `personal_sign` by another, which refuses with EIP-1193 4100 ("The
+requested account and/or method has not been authorized by the user"); the SDK
+reported that as "Payment service unavailable". Since 2.1.3:
+
+- The SDK discovers wallets with EIP-6963 at `init()` and uses, in order: the
+  host's `init({ provider })`; the wallet whose `rdns` matches
+  `init({ walletRdns: 'io.metamask' })`; the only wallet; the one already
+  connected to this site; else `window.ethereum` with a console warning that
+  names every candidate (`[JubJub] Wallet provider: ...`).
+- After `eth_requestAccounts` the SDK confirms with `eth_accounts` that this
+  origin is authorised for the returned account, and checks again on the same
+  provider before every signature. Not authorised: one reconnect prompt, then
+  the gate says "Connect your wallet to this site" with a Connect wallet
+  button, and the retry reconnects instead of signing with the same account.
+- Wallet refusals are named: 4001 "You cancelled the request"; 4100 "Connect
+  your wallet to this site"; -32002 "Wallet request waiting"; a wrong network
+  "Switch your wallet to Base". "Payment service unavailable" is shown only
+  when a JubJub backend call failed (`ApiHttpError`).
+- A 409 from session create because the piece has no live ownership contract
+  yet is "This video isn't ready for paid streaming yet"
+  (`ContentNotPlayableError`), not a service outage.
+
+`classifyWalletError`, `walletGateMessage`, `ContentNotPlayableError` and
+`contentNotPlayableMessage` are exported for hosts that render their own gate.
+
 ### Static shorthand
 
 ```javascript

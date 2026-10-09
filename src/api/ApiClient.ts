@@ -1,6 +1,31 @@
 import type { ContentInfo, SearchParams, SearchResponse } from '../types';
 import { parseFundingError } from '../fundingErrors';
+import { parseContentNotPlayable } from '../streamingErrors';
 import { publicProfileFrom, redactEmails, stripInternalIdentity } from '../privacy';
+
+/**
+ * A JubJub backend call that did not succeed: a non-2xx status, or a 2xx body
+ * missing what the SDK needs. Distinct from wallet errors on purpose: the
+ * gate says "Payment service unavailable" for THIS and for nothing else.
+ */
+export class ApiHttpError extends Error {
+  readonly name = 'ApiHttpError';
+  readonly status: number;
+  readonly body: string;
+  readonly call: string;
+
+  constructor(call: string, status: number, body = '') {
+    super(`${call} failed: ${status}${body ? ' ' + body.slice(0, 200) : ''}`);
+    Object.setPrototypeOf(this, ApiHttpError.prototype);
+    this.call = call;
+    this.status = status;
+    this.body = body;
+  }
+}
+
+export function isApiHttpError(err: unknown): err is ApiHttpError {
+  return err instanceof ApiHttpError;
+}
 
 export class ApiClient {
   private apiUrl: string;
@@ -123,11 +148,11 @@ export class ApiClient {
       )}`,
     );
     if (!nonceRes.ok) {
-      throw new Error(`Wallet nonce failed: ${nonceRes.status}`);
+      throw new ApiHttpError('Wallet nonce', nonceRes.status, await nonceRes.text().catch(() => ''));
     }
     const { nonce, message_to_sign: message } = await nonceRes.json();
     if (!nonce || !message) {
-      throw new Error('Wallet nonce response was incomplete');
+      throw new ApiHttpError('Wallet nonce', nonceRes.status, 'response was incomplete');
     }
 
     // Sign the message EXACTLY as issued — the backend recovers the signer
@@ -145,7 +170,7 @@ export class ApiClient {
       }),
     });
     if (!res.ok) {
-      throw new Error(`Viewer session failed: ${res.status}`);
+      throw new ApiHttpError('Viewer session', res.status, await res.text().catch(() => ''));
     }
     const data = await res.json();
     this.sessionToken = data.session_token;
@@ -245,9 +270,13 @@ export class ApiClient {
       const text = await res.text().catch(() => '');
       // 402 (allowance/balance below the minimum) and 503 (chain unreadable)
       // arrive typed so the SDK and host can say what to do about them.
+      // 409 content_not_sellable (no live ownership contract yet, or hosted
+      // elsewhere) is about the piece, not the service: typed so the gate
+      // can say so instead of "Payment service unavailable".
       throw (
         parseFundingError(res.status, text) ??
-        new Error(`Create session failed: ${res.status} ${text}`)
+        parseContentNotPlayable(res.status, text) ??
+        new ApiHttpError('Create session', res.status, text)
       );
     }
     const data = await res.json();
