@@ -12,6 +12,14 @@ export interface JubJubInitConfig {
      */
     provider?: any;
     /**
+     * With several wallet extensions installed, the EIP-6963 `rdns` of the one
+     * to use (for example 'io.metamask', 'com.coinbase.wallet', 'io.rabby').
+     * Without it the SDK picks the only announced wallet, else the one already
+     * connected to this site, else `window.ethereum` with a console warning.
+     * Ignored when `provider` is passed.
+     */
+    walletRdns?: string;
+    /**
      * Standing USDC allowance (in whole dollars) a viewer approves ONCE, then
      * streams many sessions/videos signature-free as the operator draws it down.
      * Defaults to $10. Bounded + finite — never an unlimited approval. Re-approve

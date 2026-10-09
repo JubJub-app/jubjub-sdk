@@ -1,4 +1,17 @@
 import type { ContentInfo, SearchParams, SearchResponse } from '../types';
+/**
+ * A JubJub backend call that did not succeed: a non-2xx status, or a 2xx body
+ * missing what the SDK needs. Distinct from wallet errors on purpose: the
+ * gate says "Payment service unavailable" for THIS and for nothing else.
+ */
+export declare class ApiHttpError extends Error {
+    readonly name = "ApiHttpError";
+    readonly status: number;
+    readonly body: string;
+    readonly call: string;
+    constructor(call: string, status: number, body?: string);
+}
+export declare function isApiHttpError(err: unknown): err is ApiHttpError;
 export declare class ApiClient {
     private apiUrl;
     private sessionToken;
