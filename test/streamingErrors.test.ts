@@ -49,6 +49,25 @@ test('other statuses are not content refusals; an unfamiliar 409 keeps its detai
   assert.equal(parseContentNotPlayable(409, null), null);
 });
 
+test("the documented ownership_pending code maps to \"isn't ready\" whatever the wording", () => {
+  const body = JSON.stringify({ detail: { reason: 'ownership_pending', content_id: 'cnt_303e26ced0f0', message: 'Content cnt_303e26ced0f0 has no ownership contract yet, so a streaming session could not pay its rights holders.', ownership_status: 'pending', ownership_reason: 'split_config_unresolved' } });
+  const err = parseContentNotPlayable(409, body);
+  assert.equal(err?.reason, 'not_minted');
+  assert.equal(contentNotPlayableMessage(err!).title, "This video isn't ready for paid streaming yet");
+  const structured = parseContentNotPlayable(409, JSON.stringify({ detail: { reason: 'content_not_sellable', content_id: 'cnt_x', message: 'Content cnt_x lives on youtube and JubJub holds no file for it, so there is nothing to stream here.' } }));
+  assert.equal(structured?.reason, 'hosted_elsewhere');
+});
+
+test("the pre-2026-10-09 backend's bare 400 for a missing contract is read the same way", () => {
+  // Tom's console, 2.1.4: POST /v2/streaming/sessions -> 400 and the SDK said "Payment service unavailable".
+  const legacy = parseContentNotPlayable(400, JSON.stringify({ detail: 'Content cnt_303e26ced0f0 has no ownership contract deployed. Cannot create streaming session.' }));
+  assert.equal(legacy?.reason, 'not_minted');
+  assert.equal(contentNotPlayableMessage(legacy!).title, "This video isn't ready for paid streaming yet");
+  // any other 400 stays an ordinary failure
+  assert.equal(parseContentNotPlayable(400, JSON.stringify({ detail: 'viewer_wallet is required' })), null);
+  assert.equal(parseContentNotPlayable(400, ''), null);
+});
+
 test('a non-JSON 409 body is read as plain text and never throws', () => {
   const err = parseContentNotPlayable(409, 'Content cnt_x cannot be streamed for payment (contract=none)');
   assert.equal(err?.reason, 'not_minted');

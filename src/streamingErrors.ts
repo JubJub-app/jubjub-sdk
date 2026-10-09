@@ -45,18 +45,37 @@ export function parseContentNotPlayable(
   status: number,
   bodyText: string | null | undefined,
 ): ContentNotPlayableError | null {
-  if (status !== 409) return null;
+  // 409 is the documented shape (since 2026-10-09 with a machine-readable
+  // {reason, content_id, message, ...} body). 400 is the shape the backend
+  // used before for "no ownership contract deployed", kept so a 2.1.5 page
+  // against an older backend still says the right thing.
+  if (status !== 409 && status !== 400) return null;
   let detail = '';
+  let reason: string | null = null;
   try {
     const body = bodyText ? JSON.parse(bodyText) : null;
     const d = body && typeof body === 'object' ? (body as any).detail : null;
     if (typeof d === 'string') detail = d;
-    else if (d && typeof d === 'object' && typeof d.message === 'string') detail = d.message;
-    else if (d && typeof d === 'object' && typeof d.detail === 'string') detail = d.detail;
+    else if (d && typeof d === 'object') {
+      if (typeof d.reason === 'string') reason = d.reason;
+      if (typeof d.message === 'string') detail = d.message;
+      else if (typeof d.detail === 'string') detail = d.detail;
+    }
   } catch {
     detail = typeof bodyText === 'string' ? bodyText : '';
   }
-  if (/cannot be streamed for payment|published on-chain|live contract/i.test(detail)) {
+  // The documented code first: the piece exists, its contract does not yet.
+  if (reason === 'ownership_pending') {
+    return new ContentNotPlayableError('not_minted', detail || 'This piece has no ownership contract yet.');
+  }
+  if (status === 400 && !/no ownership contract/i.test(detail)) return null;
+  if (reason === 'content_not_sellable' && /holds no file|nothing to stream here|lives on/i.test(detail)) {
+    return new ContentNotPlayableError('hosted_elsewhere', detail);
+  }
+  if (
+    reason === 'content_not_sellable' ||
+    /cannot be streamed for payment|published on-chain|live contract|no ownership contract/i.test(detail)
+  ) {
     return new ContentNotPlayableError('not_minted', detail);
   }
   if (/holds no file|nothing to stream here|lives on/i.test(detail)) {
