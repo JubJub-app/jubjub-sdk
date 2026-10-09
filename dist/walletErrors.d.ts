@@ -26,9 +26,11 @@
  *   4900/4901 disconnected      -> 'disconnected'
  *   -32002 request pending      -> 'pending' (a prompt is already open in the wallet)
  */
-export type WalletErrorKind = 'rejected' | 'unauthorised' | 'pending' | 'unsupported' | 'disconnected' | 'chain_mismatch' | 'no_account' | 'no_reply' | 'other';
+export type WalletErrorKind = 'rejected' | 'unauthorised' | 'pending' | 'unsupported' | 'disconnected' | 'stale_connection' | 'chain_mismatch' | 'no_account' | 'no_reply' | 'other';
 /** Error code the SDK attaches when its own eth_accounts check fails. */
 export declare const UNAUTHORISED_ACCOUNT_CODE = "JUBJUB_ACCOUNT_UNAUTHORISED";
+/** Error code for a wallet connection record that a fresh permission prompt did not repair (walletAuthorise.ts). */
+export declare const STALE_CONNECTION_CODE = "JUBJUB_WALLET_STALE_CONNECTION";
 /**
  * The numeric code of a wallet error, wherever the wallet put it. MetaMask
  * sets `code` on the error; some providers nest it under `data`, `error` or
