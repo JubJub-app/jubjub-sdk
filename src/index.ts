@@ -1,5 +1,5 @@
 export { JubJub } from './JubJub';
-export { ApiClient } from './api/ApiClient';
+export { ApiClient, ApiHttpError, isApiHttpError } from './api/ApiClient';
 export { Wallet } from './core/Wallet';
 export { Approval } from './core/Approval';
 export { Session } from './core/Session';
@@ -16,6 +16,30 @@ export {
   isFundingUnverifiableError,
 } from './fundingErrors';
 export type { FundingRequiredReason } from './fundingErrors';
+export {
+  classifyWalletError,
+  walletGateMessage,
+  walletErrorCode,
+  accountIsAuthorised,
+  unauthorisedAccountError,
+  isWalletError,
+  UNAUTHORISED_ACCOUNT_CODE,
+} from './walletErrors';
+export type { WalletErrorKind } from './walletErrors';
+export {
+  ContentNotPlayableError,
+  isContentNotPlayableError,
+  parseContentNotPlayable,
+  contentNotPlayableMessage,
+} from './streamingErrors';
+export type { ContentNotPlayableReason } from './streamingErrors';
+export {
+  announcedProviders,
+  candidateProviders,
+  describeProvider,
+  selectProvider,
+} from './walletProviders';
+export type { Eip6963ProviderInfo, ProviderCandidate } from './walletProviders';
 export {
   MEMBER_FALLBACK_NAME,
   publicProfileFrom,

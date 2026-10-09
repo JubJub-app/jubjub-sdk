@@ -73,6 +73,13 @@ export declare class JubJub extends EventEmitter {
      * consumer explicitly opted into 'testnet').
      */
     static connectBrowserWallet(network?: NetworkFlag): Promise<WalletLike>;
+    /**
+     * The EIP-1193 provider for this page (see walletProviders.ts): the host's
+     * init({ provider }), else the EIP-6963 wallet named by init({ walletRdns }),
+     * else the only wallet, else the one already connected to this site, else
+     * window.ethereum with a warning naming every candidate.
+     */
+    private static _selectWalletProvider;
     private static _autoDiscover;
     /**
      * Mark a video for JubJub payments but DON'T start the payment flow yet.
@@ -95,6 +102,21 @@ export declare class JubJub extends EventEmitter {
      * pre-payment failure (load/price, wallet, viewer-session, approval,
      * streaming-session) so no JubJub-tagged video plays without secured payment.
      */
+    /**
+     * Gate on a wallet error with the text for what the wallet said
+     * (walletErrors.ts), never "Payment service unavailable". An account the
+     * site is not authorised for, or a disconnected wallet, also forgets the
+     * page-shared wallet so the retry reconnects instead of signing with the
+     * same unauthorised account again.
+     */
+    private _gateWalletError;
+    /**
+     * Before signing: is this origin still authorised for `address` on the
+     * provider that connected it? No provider (a BYO wallet client) or a
+     * provider that cannot answer eth_accounts: proceed, the signature decides.
+     * Not listed: ask once more (eth_requestAccounts), then re-check.
+     */
+    private _confirmAccountAuthorised;
     private _gatePayment;
     /**
      * Tell the host about a typed funding error before gating. 402 ->

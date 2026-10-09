@@ -1,4 +1,20 @@
 import { createWalletClient, custom } from 'viem';
+import { ApiHttpError } from './api/ApiClient';
+import {
+  accountIsAuthorised,
+  classifyWalletError,
+  isWalletError,
+  markWalletError,
+  unauthorisedAccountError,
+  walletGateMessage,
+} from './walletErrors';
+import {
+  candidateProviders,
+  describeProvider,
+  selectProvider,
+  startProviderDiscovery,
+} from './walletProviders';
+import { contentNotPlayableMessage, isContentNotPlayableError } from './streamingErrors';
 import { chainForNetwork, type NetworkFlag } from './chains';
 import {
   chainIdMatches,
@@ -76,6 +92,17 @@ let _initialized = false;
  * host whose wallet provider isn't exposed on window.
  */
 let _injectedProvider: any | null = null;
+
+/**
+ * The EIP-1193 provider the page-shared wallet was connected through. Step 3
+ * re-checks eth_accounts on THIS object before signing, so the account that
+ * answered eth_requestAccounts is the one asked to sign (see walletErrors.ts
+ * for the 4100 this prevents). Cleared with the wallet by resetWallet().
+ */
+let _sharedProvider: any | null = null;
+
+/** init({ walletRdns }): which EIP-6963 wallet to use when several are injected. */
+let _initWalletRdns: string | null = null;
 
 /**
  * Session token shared by every video on the page. Set by init({ sessionToken })
@@ -252,6 +279,28 @@ function _isChainMismatch(err: unknown): boolean {
   return isChainMismatchError(err);
 }
 
+/** The page's host, for wallet messages ("connect bankrtv.app"). */
+function _pageHost(): string {
+  try {
+    return typeof location !== 'undefined' && location.host ? location.host : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * The accounts a provider says are authorised for this origin (eth_accounts),
+ * or null when the provider cannot answer (then the signature itself decides).
+ */
+async function _accountsOf(provider: any): Promise<string[] | null> {
+  try {
+    const accs = await provider.request({ method: 'eth_accounts' });
+    return Array.isArray(accs) ? accs : null;
+  } catch {
+    return null;
+  }
+}
+
 export class JubJub extends EventEmitter {
   private options: JubJubOptions;
   private api: ApiClient;
@@ -315,6 +364,12 @@ export class JubJub extends EventEmitter {
     if (config.apiUrl) _initApiUrl = config.apiUrl;
     if (config.network) _initNetwork = config.network;
     if (config.provider) _injectedProvider = config.provider;
+    if (typeof config.walletRdns === 'string' && config.walletRdns.trim()) {
+      _initWalletRdns = config.walletRdns.trim();
+    }
+    // Ask every installed wallet to announce itself (EIP-6963) now, so the
+    // list is ready when a viewer presses play. Idempotent; no prompt.
+    startProviderDiscovery(typeof window !== 'undefined' ? (window as any) : undefined);
     if (typeof config.sessionToken === 'string' && config.sessionToken.trim()) {
       _sessionToken = config.sessionToken.trim();
     }
@@ -377,6 +432,7 @@ export class JubJub extends EventEmitter {
    */
   static resetWallet(): void {
     _sharedWallet = null;
+    _sharedProvider = null;
     _walletConnecting = null;
   }
 
@@ -430,7 +486,7 @@ export class JubJub extends EventEmitter {
    * consumer explicitly opted into 'testnet').
    */
   static async connectBrowserWallet(network: NetworkFlag = _initNetwork): Promise<WalletLike> {
-    const ethereum = _injectedProvider ?? (window as any).ethereum;
+    const ethereum = await JubJub._selectWalletProvider();
     if (!ethereum) {
       throw new Error(
         'No browser wallet detected. Install MetaMask, or pass an ' +
@@ -441,12 +497,36 @@ export class JubJub extends EventEmitter {
 
     const chain = chainForNetwork(network);
 
-    const accounts: string[] = await ethereum.request({
-      method: 'eth_requestAccounts',
-    });
-    if (!accounts.length) throw new Error('No accounts returned from wallet.');
+    // 1. Connect. The answer is the ONLY source of the address.
+    let accounts: string[];
+    try {
+      accounts = await ethereum.request({ method: 'eth_requestAccounts' });
+    } catch (connectErr) {
+      throw markWalletError(connectErr);
+    }
+    if (!Array.isArray(accounts) || !accounts.length) {
+      throw markWalletError(new Error('No accounts returned from wallet.'));
+    }
 
     const address = accounts[0] as `0x${string}`;
+
+    // 2. Confirm this origin is authorised for that account: a check, never
+    //    a source. A wallet can answer eth_requestAccounts with a cached
+    //    account while its permission prompt is still open, or another
+    //    injected wallet can answer for it; signing with that account then
+    //    fails 4100 and, until this check, was reported as a payment-service
+    //    outage. Not authorised: stop here, before any nonce or signature.
+    const authorised = await _accountsOf(ethereum);
+    if (authorised !== null && !accountIsAuthorised(authorised, address)) {
+      console.warn(
+        '[JubJub] eth_requestAccounts returned',
+        address.slice(0, 10) + '...',
+        'but eth_accounts lists',
+        authorised,
+        'for', _pageHost(),
+      );
+      throw markWalletError(unauthorisedAccountError(address, _pageHost()));
+    }
 
     // Switch to the configured chain. A viewer who declines the switch
     // (4001) is a user rejection and propagates as one, so the play harness
@@ -509,7 +589,44 @@ export class JubJub extends EventEmitter {
     });
 
     _sharedWallet = client as unknown as WalletLike;
+    _sharedProvider = ethereum;
     return _sharedWallet;
+  }
+
+  /**
+   * The EIP-1193 provider for this page (see walletProviders.ts): the host's
+   * init({ provider }), else the EIP-6963 wallet named by init({ walletRdns }),
+   * else the only wallet, else the one already connected to this site, else
+   * window.ethereum with a warning naming every candidate.
+   */
+  private static async _selectWalletProvider(): Promise<any | null> {
+    const win = typeof window !== 'undefined' ? (window as any) : undefined;
+    const candidates = candidateProviders(win);
+    const { chosen, reason } = await selectProvider(candidates, {
+      injected: _injectedProvider,
+      preferRdns: _initWalletRdns,
+      legacy: win?.ethereum ?? null,
+      authorised: async (c) => {
+        const accs = await c.provider.request({ method: 'eth_accounts' });
+        return Array.isArray(accs) && accs.length > 0;
+      },
+    });
+    if (!chosen) return null;
+    const line =
+      `[JubJub] Wallet provider: ${describeProvider(chosen)} [${reason}]` +
+      (candidates.length > 1
+        ? `; ${candidates.length} candidates: ${candidates.map(describeProvider).join('; ')}`
+        : '');
+    if (reason === 'ambiguous-fallback') {
+      console.warn(
+        line +
+          '. Several wallets are injected and none is connected to this site yet; ' +
+          'pass JubJub.init({ walletRdns }) or init({ provider }) to choose one.',
+      );
+    } else {
+      console.log(line);
+    }
+    return chosen.provider;
   }
 
   // =========================================================================
@@ -801,6 +918,76 @@ export class JubJub extends EventEmitter {
    * pre-payment failure (load/price, wallet, viewer-session, approval,
    * streaming-session) so no JubJub-tagged video plays without secured payment.
    */
+  /**
+   * Gate on a wallet error with the text for what the wallet said
+   * (walletErrors.ts), never "Payment service unavailable". An account the
+   * site is not authorised for, or a disconnected wallet, also forgets the
+   * page-shared wallet so the retry reconnects instead of signing with the
+   * same unauthorised account again.
+   */
+  private _gateWalletError(err: unknown, stage: 'connect' | 'sign' | 'approve'): void {
+    const kind = classifyWalletError(err);
+    if (kind === 'unauthorised' || kind === 'disconnected') JubJub.resetWallet();
+    if (stage === 'connect' && kind === 'other') {
+      const noWallet = err instanceof Error && err.message === 'no-wallet';
+      this._gatePayment(
+        'Connect a wallet to watch',
+        noWallet
+          ? 'A wallet is required to pay for streaming. Install one, or open this page in a wallet browser, and retry.'
+          : 'A wallet is required to pay for streaming. Connect one and retry.',
+        err,
+        'Connect wallet',
+      );
+      return;
+    }
+    const text = walletGateMessage(kind, {
+      host: _pageHost(),
+      chainLabel: chainForNetwork(this._activeNetwork()).label,
+      detail: err instanceof Error ? err.message : err != null ? String(err) : '',
+    });
+    let sub = text.sub;
+    if (kind === 'rejected') {
+      sub =
+        stage === 'connect'
+          ? 'Approve the connection request in your wallet to start watching.'
+          : stage === 'sign'
+            ? 'Approve the signature request to confirm your wallet and start watching. It is free and costs no gas.'
+            : 'Approve the USDC spending request in your wallet to start streaming.';
+    }
+    this._gatePayment(text.title, sub, err, text.action);
+  }
+
+  /**
+   * Before signing: is this origin still authorised for `address` on the
+   * provider that connected it? No provider (a BYO wallet client) or a
+   * provider that cannot answer eth_accounts: proceed, the signature decides.
+   * Not listed: ask once more (eth_requestAccounts), then re-check.
+   */
+  private async _confirmAccountAuthorised(
+    address: string,
+  ): Promise<{ ok: true } | { ok: false; error: unknown }> {
+    const provider =
+      _sharedProvider ?? _injectedProvider ?? (typeof window !== 'undefined' ? (window as any).ethereum : null);
+    if (!provider || typeof provider.request !== 'function') return { ok: true };
+    let accounts = await _accountsOf(provider);
+    if (accounts === null || accountIsAuthorised(accounts, address)) return { ok: true };
+    console.warn(
+      '[JubJub] Step 3: wallet lists',
+      accounts,
+      'for', _pageHost(),
+      'but the connected account is',
+      address.slice(0, 10) + '...; asking the wallet to connect this site',
+    );
+    try {
+      await provider.request({ method: 'eth_requestAccounts' });
+    } catch (e) {
+      return { ok: false, error: markWalletError(e) };
+    }
+    accounts = await _accountsOf(provider);
+    if (accounts === null || accountIsAuthorised(accounts, address)) return { ok: true };
+    return { ok: false, error: markWalletError(unauthorisedAccountError(address, _pageHost())) };
+  }
+
   private _gatePayment(title: string, sub: string, cause?: unknown, action?: string): void {
     const detail =
       cause instanceof Error ? cause.message : cause != null ? String(cause) : '';
@@ -961,33 +1148,9 @@ export class JubJub extends EventEmitter {
       try {
         address = await this._ensureWallet();
       } catch (walletErr) {
-        // B: no wallet / connect failed → FAIL CLOSED (gate, no free play).
-        // Name the actual problem when it is one the viewer can act on:
-        // a wallet left on another network, or a connect they declined.
-        if (_isChainMismatch(walletErr)) {
-          const label = chainForNetwork(this._activeNetwork()).label;
-          this._gatePayment(
-            `Switch your wallet to ${label}`,
-            walletErr instanceof Error && walletErr.message
-              ? walletErr.message
-              : `Your wallet is on another network. Switch it to ${label} and retry.`,
-            walletErr,
-          );
-          return;
-        }
-        if (_isUserRejection(walletErr)) {
-          this._gatePayment(
-            'Wallet connection declined',
-            'Approve the connection request in your wallet to start watching.',
-            walletErr,
-          );
-          return;
-        }
-        this._gatePayment(
-          'Connect a wallet to watch',
-          'A wallet is required to pay for streaming. Connect one and retry.',
-          walletErr,
-        );
+        // B: no wallet / connect failed → FAIL CLOSED (gate, no free play),
+        // and say what the wallet actually said (walletErrors.ts).
+        this._gateWalletError(walletErr, 'connect');
         return;
       }
       console.log('[JubJub] Step 2 done: wallet', address.slice(0, 10) + '...');
@@ -1017,28 +1180,41 @@ export class JubJub extends EventEmitter {
         return;
       }
 
+      // Confirm, on the provider that connected it, that this origin is still
+      // authorised for the account about to sign. The shared wallet lives for
+      // the page; the viewer can disconnect the site in the wallet between
+      // plays, and signing then fails 4100. Not authorised: one reconnect
+      // (the viewer just pressed play, a prompt is expected), then gate.
+      const authorised = await this._confirmAccountAuthorised(address);
+      if (!authorised.ok) {
+        this._gateWalletError(authorised.error, 'sign');
+        return;
+      }
+
       try {
         const minted = await this.api.createViewerSession(contentId, address, (message) =>
-          this.wallet.signMessage(message),
+          // Tag signer failures so they are never mistaken for a backend one.
+          this.wallet.signMessage(message).catch((e) => {
+            throw markWalletError(e);
+          }),
         );
         // Share it with every later video on this page.
         _sessionToken = minted.sessionToken;
       } catch (viewerErr) {
-        // A declined signature is the viewer's own choice — say so plainly
-        // rather than blaming the payment service.
-        if (_isUserRejection(viewerErr)) {
-          this._gatePayment(
-            'Signature declined',
-            'Approve the signature request to confirm your wallet and start ' +
-              'watching. It is free and costs no gas.',
-            viewerErr,
-          );
+        // The wallet refused or failed to sign: the viewer's to fix, said
+        // plainly (declined, not authorised for this site, prompt pending).
+        if (isWalletError(viewerErr)) {
+          this._gateWalletError(viewerErr, 'sign');
           return;
         }
-        // C: viewer-session creation failed → FAIL CLOSED (gate).
+        // C: the backend (nonce or viewer-session) failed → FAIL CLOSED.
+        // This is the one place in step 3 where the payment service is the
+        // problem, so it is the one place that says so.
         this._gatePayment(
           'Payment service unavailable',
-          "Couldn't start a payment session. Please try again.",
+          viewerErr instanceof ApiHttpError
+            ? `Couldn't start a payment session (${viewerErr.call.toLowerCase()} answered ${viewerErr.status}). Please try again.`
+            : "Couldn't reach the payment service to start a session. Please try again.",
           viewerErr,
         );
         return;
@@ -1082,7 +1258,13 @@ export class JubJub extends EventEmitter {
       } catch (approvalErr) {
         // FAIL CLOSED: approval rejected by the user, approve tx failed, the
         // allowance could not be verified, or the chain/RPC was unusable. Do
-        // NOT proceed and do NOT fall through to free play.
+        // NOT proceed and do NOT fall through to free play. A wallet refusal
+        // (declined, not authorised, prompt pending, wrong network) is named;
+        // anything else keeps the approval wording.
+        if (classifyWalletError(approvalErr) !== 'other') {
+          this._gateWalletError(approvalErr, 'approve');
+          return;
+        }
         this._gatePayment(
           'Payment approval required to watch',
           'Approve the USDC payment in your wallet to start streaming.',
@@ -1111,6 +1293,14 @@ export class JubJub extends EventEmitter {
         if (isFundingRequiredError(streamErr) || isFundingUnverifiableError(streamErr)) {
           this._announceFunding(streamErr);
           const text = fundingMessage(streamErr);
+          this._gatePayment(text.title, text.sub, streamErr, text.action);
+          return;
+        }
+        // 409 content_not_sellable: the piece has no live ownership contract
+        // yet (or is hosted elsewhere). The service is fine and so is the
+        // session token; say what is actually not ready.
+        if (isContentNotPlayableError(streamErr)) {
+          const text = contentNotPlayableMessage(streamErr);
           this._gatePayment(text.title, text.sub, streamErr, text.action);
           return;
         }
