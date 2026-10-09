@@ -329,6 +329,16 @@ reported that as "Payment service unavailable". Since 2.1.3:
 `classifyWalletError`, `walletGateMessage`, `ContentNotPlayableError` and
 `contentNotPlayableMessage` are exported for hosts that render their own gate.
 
+2.1.4: a wallet with a stale connection record answers `eth_requestAccounts`
+from its cache with no popup while `eth_accounts` lists nothing for the site
+(measured on bankrtv.app with a single MetaMask). When the two disagree the
+SDK now asks for a fresh permission with `wallet_requestPermissions` (the
+wallet's connect dialog) and reads `eth_accounts` again; the account the
+wallet then lists is the one used. If it is still empty the gate says
+"Reconnect your wallet to this site": open the wallet, disconnect the site,
+reload. The gate's button runs the same sequence. `requestAuthorisedAccount`
+and `reconfirmAuthorisedAccount` are exported.
+
 ### Static shorthand
 
 ```javascript

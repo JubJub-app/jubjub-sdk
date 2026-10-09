@@ -1,13 +1,12 @@
 import { createWalletClient, custom } from 'viem';
 import { ApiHttpError } from './api/ApiClient';
 import {
-  accountIsAuthorised,
   classifyWalletError,
   isWalletError,
   markWalletError,
-  unauthorisedAccountError,
   walletGateMessage,
 } from './walletErrors';
+import { reconfirmAuthorisedAccount, requestAuthorisedAccount } from './walletAuthorise';
 import {
   candidateProviders,
   describeProvider,
@@ -288,19 +287,6 @@ function _pageHost(): string {
   }
 }
 
-/**
- * The accounts a provider says are authorised for this origin (eth_accounts),
- * or null when the provider cannot answer (then the signature itself decides).
- */
-async function _accountsOf(provider: any): Promise<string[] | null> {
-  try {
-    const accs = await provider.request({ method: 'eth_accounts' });
-    return Array.isArray(accs) ? accs : null;
-  } catch {
-    return null;
-  }
-}
-
 export class JubJub extends EventEmitter {
   private options: JubJubOptions;
   private api: ApiClient;
@@ -497,36 +483,19 @@ export class JubJub extends EventEmitter {
 
     const chain = chainForNetwork(network);
 
-    // 1. Connect. The answer is the ONLY source of the address.
-    let accounts: string[];
-    try {
-      accounts = await ethereum.request({ method: 'eth_requestAccounts' });
-    } catch (connectErr) {
-      throw markWalletError(connectErr);
-    }
-    if (!Array.isArray(accounts) || !accounts.length) {
-      throw markWalletError(new Error('No accounts returned from wallet.'));
-    }
-
-    const address = accounts[0] as `0x${string}`;
-
-    // 2. Confirm this origin is authorised for that account: a check, never
-    //    a source. A wallet can answer eth_requestAccounts with a cached
-    //    account while its permission prompt is still open, or another
-    //    injected wallet can answer for it; signing with that account then
-    //    fails 4100 and, until this check, was reported as a payment-service
-    //    outage. Not authorised: stop here, before any nonce or signature.
-    const authorised = await _accountsOf(ethereum);
-    if (authorised !== null && !accountIsAuthorised(authorised, address)) {
-      console.warn(
-        '[JubJub] eth_requestAccounts returned',
-        address.slice(0, 10) + '...',
-        'but eth_accounts lists',
-        authorised,
-        'for', _pageHost(),
-      );
-      throw markWalletError(unauthorisedAccountError(address, _pageHost()));
-    }
+    // 1 + 2. Connect, then CONFIRM this origin is authorised for the account
+    //    (eth_accounts is the check, never the source). A wallet with a stale
+    //    connection record answers eth_requestAccounts from its cache with no
+    //    popup and lists nothing in eth_accounts; the fix is a fresh
+    //    permission prompt (wallet_requestPermissions), after which
+    //    eth_accounts decides. Still nothing: a stale-connection error that
+    //    tells the viewer to disconnect the site in the wallet and reload.
+    //    See walletAuthorise.ts for the measured sequence.
+    const address = (await requestAuthorisedAccount(
+      ethereum,
+      _pageHost(),
+      (m, ...d) => console.warn(m, ...d),
+    )) as `0x${string}`;
 
     // Switch to the configured chain. A viewer who declines the switch
     // (4001) is a user rejection and propagates as one, so the play harness
@@ -927,7 +896,7 @@ export class JubJub extends EventEmitter {
    */
   private _gateWalletError(err: unknown, stage: 'connect' | 'sign' | 'approve'): void {
     const kind = classifyWalletError(err);
-    if (kind === 'unauthorised' || kind === 'disconnected') JubJub.resetWallet();
+    if (kind === 'unauthorised' || kind === 'disconnected' || kind === 'stale_connection') JubJub.resetWallet();
     if (stage === 'connect' && kind === 'other') {
       const noWallet = err instanceof Error && err.message === 'no-wallet';
       this._gatePayment(
@@ -963,29 +932,30 @@ export class JubJub extends EventEmitter {
    * provider that cannot answer eth_accounts: proceed, the signature decides.
    * Not listed: ask once more (eth_requestAccounts), then re-check.
    */
+  /**
+   * Before signing: is this origin still authorised for `address` on the
+   * provider that connected it? No provider (a BYO wallet client) or a
+   * provider that cannot answer eth_accounts: proceed, the signature decides.
+   * Not listed: one fresh permission prompt (wallet_requestPermissions), then
+   * re-check; the account the wallet now lists is the one to sign with.
+   */
   private async _confirmAccountAuthorised(
     address: string,
-  ): Promise<{ ok: true } | { ok: false; error: unknown }> {
+  ): Promise<{ ok: true; address: string } | { ok: false; error: unknown }> {
     const provider =
       _sharedProvider ?? _injectedProvider ?? (typeof window !== 'undefined' ? (window as any).ethereum : null);
-    if (!provider || typeof provider.request !== 'function') return { ok: true };
-    let accounts = await _accountsOf(provider);
-    if (accounts === null || accountIsAuthorised(accounts, address)) return { ok: true };
-    console.warn(
-      '[JubJub] Step 3: wallet lists',
-      accounts,
-      'for', _pageHost(),
-      'but the connected account is',
-      address.slice(0, 10) + '...; asking the wallet to connect this site',
-    );
+    if (!provider || typeof provider.request !== 'function') return { ok: true, address };
     try {
-      await provider.request({ method: 'eth_requestAccounts' });
+      const confirmed = await reconfirmAuthorisedAccount(
+        provider,
+        address,
+        _pageHost(),
+        (m, ...d) => console.warn(m, ...d),
+      );
+      return { ok: true, address: confirmed };
     } catch (e) {
-      return { ok: false, error: markWalletError(e) };
+      return { ok: false, error: e };
     }
-    accounts = await _accountsOf(provider);
-    if (accounts === null || accountIsAuthorised(accounts, address)) return { ok: true };
-    return { ok: false, error: markWalletError(unauthorisedAccountError(address, _pageHost())) };
   }
 
   private _gatePayment(title: string, sub: string, cause?: unknown, action?: string): void {
@@ -1188,6 +1158,18 @@ export class JubJub extends EventEmitter {
       const authorised = await this._confirmAccountAuthorised(address);
       if (!authorised.ok) {
         this._gateWalletError(authorised.error, 'sign');
+        return;
+      }
+      if (authorised.address.toLowerCase() !== address.toLowerCase()) {
+        // The viewer chose a different account in the wallet's dialog: the
+        // page-shared wallet still points at the old one, so reconnect on
+        // the next play rather than sign for an account the client is not.
+        console.warn('[JubJub] The wallet authorised a different account than the one connected; reconnecting');
+        JubJub.resetWallet();
+        this._gateWalletError(
+          Object.assign(new Error('The wallet authorised a different account. Press play again to continue with it.'), { code: 4100 }),
+          'sign',
+        );
         return;
       }
 
