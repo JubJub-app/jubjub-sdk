@@ -7,6 +7,18 @@ export { CostTracker } from './core/CostTracker';
 export { CostOverlay } from './ui/CostOverlay';
 export { EventEmitter } from './EventEmitter';
 export {
+  SignerClient,
+  SignerError,
+  isSignerError,
+  signerInfoFrom,
+  buildTokenedUrl,
+  parseSignerTokens,
+} from './core/SignerClient';
+export type { PlaybackSignerInfo, SignerTokens, SignerProof } from './core/SignerClient';
+export { TokenRenewer, renewDelaySeconds } from './core/TokenRenewer';
+export { SourceApplier, UnplayableHereError, swapNativeSource } from './core/SourceApplier';
+export type { SourceEventDetail, HlsLike, HlsCtor } from './core/SourceApplier';
+export {
   FundingRequiredError,
   FundingUnverifiableError,
   fundingMessage,
@@ -65,6 +77,7 @@ export type {
   SearchParams,
   SearchResultCard,
   SearchResponse,
+  SourceEvent,
 } from './types';
 
 // Default export = the JubJub class. In UMD builds this becomes

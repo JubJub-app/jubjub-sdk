@@ -11,5 +11,5 @@
     "rootDir": ".",
     "lib": ["ES2020", "DOM"]
   },
-  "include": ["src/walletChain.ts", "test/**/*.ts"]
+  "include": ["src/walletChain.ts", "src/core/SignerClient.ts", "src/core/TokenRenewer.ts", "src/core/SourceApplier.ts", "test/**/*.ts"]
 }

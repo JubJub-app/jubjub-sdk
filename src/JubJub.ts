@@ -35,6 +35,9 @@ import { Approval } from './core/Approval';
 import { Session } from './core/Session';
 import { CostTracker } from './core/CostTracker';
 import { PlaybackUrlRefresher } from './core/PlaybackUrlRefresher';
+import { SignerClient, buildTokenedUrl, type SignerTokens } from './core/SignerClient';
+import { TokenRenewer } from './core/TokenRenewer';
+import { SourceApplier, type HlsCtor, type HlsLike } from './core/SourceApplier';
 import { CostOverlay } from './ui/CostOverlay';
 import { claimUrlFor } from './claim';
 import type {
@@ -111,6 +114,10 @@ let _initWalletRdns: string | null = null;
  * not. Cleared when a streaming call rejects it, so the next play re-proves.
  */
 let _sessionToken: string | null = null;
+// Signed playback (2.2.0-beta): page-level hls.js and the SIWE proof behind a
+// host-minted session token. Both are ignored for pieces without a signer.
+let _initHls: HlsCtor | HlsLike | null = null;
+let _initWalletProof: { address: string; message: string; signature: string } | null = null;
 
 /**
  * Set when the backend answered 402 insufficient_allowance: the NEXT attempt's
@@ -126,7 +133,7 @@ let _pendingSpenderApproval:
 // Defaults
 // ---------------------------------------------------------------------------
 const DEFAULTS: Required<
-  Omit<JubJubOptions, 'contentId' | 'wallet' | 'sessionToken' | 'onCostUpdate' | 'onSessionStart' | 'onSessionEnd' | 'onError' | 'onWalletConnected' | 'onFundingRequired'>
+  Omit<JubJubOptions, 'contentId' | 'wallet' | 'sessionToken' | 'hls' | 'walletProof' | 'onCostUpdate' | 'onSessionStart' | 'onSessionEnd' | 'onError' | 'onWalletConnected' | 'onFundingRequired'>
 > & { contentId: string | undefined; wallet: any } = {
   contentId: undefined,
   wallet: undefined,
@@ -304,6 +311,11 @@ export class JubJub extends EventEmitter {
   private refresher: PlaybackUrlRefresher | null = null;
   /** Tier-2 only: mid-playback fail-closed gate (single instance, no stacking). */
   private midPlaybackGate: { remove: () => void } | null = null;
+  /** Signed playback only: the creator's signer, the renewal loop, the player hook. */
+  private signerClient: SignerClient | null = null;
+  private renewer: TokenRenewer | null = null;
+  private sourceApplier: SourceApplier | null = null;
+  private signerTokens: SignerTokens | null = null;
 
   constructor(options: JubJubOptions = {}) {
     super();
@@ -311,6 +323,8 @@ export class JubJub extends EventEmitter {
     this.api = new ApiClient(this.options.apiUrl ?? DEFAULT_API_URL);
     const presetToken = options.sessionToken ?? _sessionToken;
     if (presetToken) this.api.setSessionToken(presetToken);
+    const presetProof = options.walletProof ?? _initWalletProof;
+    if (presetProof) this.api.setWalletProof(presetProof);
     this.wallet = new Wallet(this.options.wallet ?? _sharedWallet ?? undefined);
 
     if (options.onCostUpdate) this.on('cost', (c: CostInfo) => options.onCostUpdate!(c.usdc, c.seconds));
@@ -368,6 +382,10 @@ export class JubJub extends EventEmitter {
     if (config.overlayPosition) {
       _initOverlayPosition = config.overlayPosition;
     }
+    if (config.hls) _initHls = config.hls as HlsCtor | HlsLike;
+    if (config.walletProof && typeof config.walletProof.signature === 'string') {
+      _initWalletProof = config.walletProof;
+    }
 
     if (_initialized) {
       console.log('[JubJub] Already initialized — skipping');
@@ -405,8 +423,14 @@ export class JubJub extends EventEmitter {
    * JubJubInitConfig.sessionToken). Pass null to forget it. Applies to every
    * video attached AFTER the call; an instance already mid-flow keeps its own.
    */
-  static setSessionToken(token: string | null | undefined): void {
+  static setSessionToken(
+    token: string | null | undefined,
+    proof?: { address: string; message: string; signature: string } | null,
+  ): void {
     _sessionToken = typeof token === 'string' && token.trim() ? token.trim() : null;
+    // The SIWE proof behind a host-minted token, for a creator's signer. Null
+    // (or a cleared token) forgets it.
+    _initWalletProof = _sessionToken && proof && typeof proof.signature === 'string' ? proof : null;
   }
 
   /**
@@ -443,6 +467,8 @@ export class JubJub extends EventEmitter {
       network: options.network ?? _initNetwork,
       showCostOverlay: options.showCostOverlay ?? _initShowOverlay,
       overlayPosition: options.overlayPosition ?? _initOverlayPosition,
+      hls: options.hls ?? _initHls ?? undefined,
+      walletProof: options.walletProof ?? _initWalletProof ?? undefined,
     };
 
     if (typeof contentOrId === 'string') {
@@ -1306,7 +1332,35 @@ export class JubJub extends EventEmitter {
       // short-lived, session-scoped playback URL and point the <video> at it.
       // Tier 1 (no `gated` flag) skips this entirely — video.src is left
       // exactly as the host page set it (today's behaviour, byte-for-byte).
-      if (this.contentInfo.gated) {
+      if (this.contentInfo.signer) {
+        // Signed playback (docs/creator-held-signer.md): the creator's own
+        // signer, not JubJub, issues the token, and only to a wallet that
+        // proved itself and can pay. Payment is secured (step 5), so ask now.
+        // FAIL CLOSED: no token, no source; nothing falls back to a public URL.
+        console.log('[JubJub] Step 5.5: signed playback — asking the creator\'s signer...');
+        try {
+          await this._unlockSignedPlayback(contentId, address, video);
+        } catch (signErr) {
+          if (isFundingRequiredError(signErr) || isFundingUnverifiableError(signErr)) {
+            this._announceFunding(signErr);
+            const text = fundingMessage(signErr);
+            this._gatePayment(text.title, text.sub, signErr, text.action);
+            return;
+          }
+          if (isContentNotPlayableError(signErr)) {
+            const text = contentNotPlayableMessage(signErr);
+            this._gatePayment(text.title, text.sub, signErr, text.action);
+            return;
+          }
+          this._gatePayment(
+            'Stream locked',
+            signErr instanceof Error ? signErr.message : "Couldn't unlock the protected stream. Please try again.",
+            signErr,
+          );
+          return;
+        }
+        console.log('[JubJub] Step 5.5 done: signed source applied + renewer armed');
+      } else if (this.contentInfo.gated) {
         console.log('[JubJub] Step 5.5: gated content — resolving playback URL...');
         try {
           const { url, expiresInSeconds } =
@@ -1395,6 +1449,83 @@ export class JubJub extends EventEmitter {
     }
   }
 
+  /**
+   * Signed playback: fetch the first token with the SIWE proof, apply the
+   * tokened URL through the host's hook, hls.js or native HLS, and arm the
+   * renewal loop, which re-asks the signer with the renewal credential before
+   * the token can 403 mid-stream. Casting cannot renew, so it is disabled.
+   */
+  private async _unlockSignedPlayback(
+    contentId: string,
+    address: string,
+    video: HTMLVideoElement,
+  ): Promise<void> {
+    const signer = this.contentInfo?.signer;
+    if (!signer) return;
+    const proof = this.api.getWalletProof();
+    if (!proof || proof.address.toLowerCase() !== address.toLowerCase()) {
+      throw new Error(
+        'Sign in with your wallet to unlock the stream. The page holds a session but no wallet signature for it.',
+      );
+    }
+    this.signerClient = new SignerClient(signer);
+    const native =
+      typeof video.canPlayType === 'function' &&
+      !this.options.hls &&
+      !!video.canPlayType('application/vnd.apple.mpegurl');
+    const first = await this.signerClient.fetchTokens({
+      contentId,
+      wallet: address,
+      proof: { message: proof.message, signature: proof.signature },
+      native,
+    });
+    this.signerTokens = first;
+    try {
+      (video as HTMLVideoElement & { disableRemotePlayback?: boolean }).disableRemotePlayback = true;
+    } catch { /* not every element exposes it */ }
+    this.sourceApplier = new SourceApplier(
+      video,
+      (detail) => this.emit('source', detail),
+      (this.options.hls as HlsCtor | HlsLike | undefined) ?? null,
+    );
+    const toDetail = (t: SignerTokens, renew: boolean) => ({
+      url: buildTokenedUrl(t.host, t.playbackId, t.tokens.v),
+      tokens: t.tokens,
+      expiresIn: t.expiresIn,
+      renewAfter: t.renewAfter,
+      playbackId: t.playbackId,
+      host: t.host,
+      renew,
+    });
+    await this.sourceApplier.apply(toDetail(first, false));
+    this.renewer = new TokenRenewer(
+      video,
+      async () => {
+        const prev = this.signerTokens;
+        const next = await this.signerClient!.fetchTokens({
+          contentId,
+          wallet: address,
+          proof: prev?.renewal
+            ? { renewal: prev.renewal }
+            : { message: proof.message, signature: proof.signature },
+          native,
+        });
+        this.signerTokens = next;
+        return {
+          url: buildTokenedUrl(next.host, next.playbackId, next.tokens.v),
+          expiresIn: next.expiresIn,
+          renewAfter: next.renewAfter,
+        };
+      },
+      async (url) => {
+        const t = this.signerTokens!;
+        await this.sourceApplier!.apply({ ...toDetail(t, true), url });
+      },
+      { onFailure: (err) => this._gateMidPlayback(err) },
+    );
+    this.renewer.start(first.expiresIn, first.renewAfter);
+  }
+
   async disconnect(): Promise<SessionSummary> {
     const playback = this.costTracker?.getPlaybackSeconds() ?? 0;
     const cost = this.costTracker?.getCost()?.usdc ?? 0;
@@ -1403,6 +1534,11 @@ export class JubJub extends EventEmitter {
     // pending refresh can't race a closed session (and won't gate on teardown).
     this.refresher?.stop();
     this.refresher = null;
+    this.renewer?.stop();
+    this.renewer = null;
+    this.sourceApplier?.destroy();
+    this.sourceApplier = null;
+    this.signerTokens = null;
     this.midPlaybackGate?.remove();
     this.midPlaybackGate = null;
     if (this.session) await this.session.close(playback);
