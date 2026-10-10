@@ -2,6 +2,7 @@ import type { ContentInfo, SearchParams, SearchResponse } from '../types';
 import { parseFundingError } from '../fundingErrors';
 import { parseContentNotPlayable } from '../streamingErrors';
 import { publicProfileFrom, redactEmails, stripInternalIdentity } from '../privacy';
+import { signerInfoFrom } from '../core/SignerClient';
 
 /**
  * A JubJub backend call that did not succeed: a non-2xx status, or a 2xx body
@@ -30,6 +31,8 @@ export function isApiHttpError(err: unknown): err is ApiHttpError {
 export class ApiClient {
   private apiUrl: string;
   private sessionToken: string | null = null;
+  /** The SIWE proof behind the session token, kept for a creator's signer. Memory only. */
+  private walletProof: { address: string; message: string; signature: string } | null = null;
 
   constructor(apiUrl: string) {
     this.apiUrl = apiUrl.replace(/\/+$/, '');
@@ -40,6 +43,14 @@ export class ApiClient {
   }
 
   /** True once a viewer/session token is held — the signature step can be skipped. */
+  setWalletProof(proof: { address: string; message: string; signature: string } | null): void {
+    this.walletProof = proof;
+  }
+
+  getWalletProof(): { address: string; message: string; signature: string } | null {
+    return this.walletProof;
+  }
+
   hasSessionToken(): boolean {
     return !!this.sessionToken;
   }
@@ -158,6 +169,9 @@ export class ApiClient {
     // Sign the message EXACTLY as issued — the backend recovers the signer
     // from this string, so any reformatting breaks verification.
     const signature = await signMessage(message);
+    // Kept so a creator-held signer can verify the same proof: one signature
+    // serves JubJub and the signer. Never persisted, never logged.
+    this.walletProof = { address: walletAddress, message, signature };
 
     const res = await fetch(`${this.apiUrl}/v2/public/viewer-session`, {
       method: 'POST',
@@ -396,6 +410,8 @@ export function toContentInfo(raw: any): ContentInfo {
   if ('playback_grant' in r) info.playback_grant = r.playback_grant ?? null;
   if (typeof r.chain_name === 'string') info.chain_name = r.chain_name;
   if ('gated' in r) info.gated = r.gated === true;
+  const signer = signerInfoFrom(r.signer);
+  if (signer) info.signer = signer;
   const creator = publicProfileFrom(r, 'creator');
   if (creator) info.creator = creator;
   return info;

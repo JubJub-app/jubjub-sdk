@@ -44,6 +44,22 @@ export interface JubJubInitConfig {
    * JubJub.setSessionToken(). Never persisted by the SDK.
    */
   sessionToken?: string;
+  /**
+   * Signed playback (2.2.0-beta): an hls.js constructor or instance the SDK
+   * may use to play a creator-signed Mux stream where the browser has no
+   * native HLS. Without it, a host page applies the tokened URL itself by
+   * listening for the `jubjub:source` event (or the SDK `source` event) and
+   * calling preventDefault; otherwise Safari plays natively and other
+   * browsers fail closed. Ignored for every piece without a signer.
+   */
+  hls?: unknown;
+  /**
+   * Signed playback: the SIWE proof behind a `sessionToken` the host minted
+   * itself (message as issued by GET /v2/auth/wallet-nonce and its
+   * signature). The creator's signer verifies the same proof, so a viewer the
+   * host signed in is never prompted again. Ignored without a signer.
+   */
+  walletProof?: { address: string; message: string; signature: string };
 }
 
 export interface ContentRegistration {
@@ -83,6 +99,10 @@ export interface JubJubOptions {
   onFundingRequired?: (error: FundingRequiredError) => void;
   /** Per-instance override of the page-level token — see JubJubInitConfig.sessionToken. */
   sessionToken?: string;
+  /** Per-instance hls.js for signed playback — see JubJubInitConfig.hls. */
+  hls?: unknown;
+  /** Per-instance SIWE proof — see JubJubInitConfig.walletProof. */
+  walletProof?: { address: string; message: string; signature: string };
 }
 
 /** Duck-typed wallet interface — any object with address + writeContract. */
@@ -126,6 +146,14 @@ export interface ContentInfo {
    * the backend and sets it as the source. This payload carries no stream URL.
    */
   gated?: boolean;
+  /**
+   * Signed playback (2.2.0-beta, docs/creator-held-signer.md): where the
+   * creator's own signer is and which signed playback id it issues tokens
+   * for. Absent for every piece today. When present the backend withholds the
+   * stream URL and the SDK asks the signer for a token after the paid session
+   * opens, then renews it before it expires.
+   */
+  signer?: { url: string; host: 'mux'; playback_id: string };
   /**
    * The creator as a viewer may see them: public display name (else
    * "JubJub member"), avatar, handle, opaque member_ref. Absent when the
@@ -195,4 +223,17 @@ export interface SearchResponse {
   scope: string;
   /** null exactly when the discoverable corpus is exhausted. */
   next_cursor: string | null;
+}
+
+
+/** Payload of the `source` event and the `jubjub:source` DOM event (signed playback). */
+export interface SourceEvent {
+  url: string;
+  tokens: { v: string; t?: string; s?: string };
+  expiresIn: number;
+  renewAfter?: number;
+  playbackId: string;
+  host: string;
+  /** False on the first apply, true on every renewal. */
+  renew: boolean;
 }
