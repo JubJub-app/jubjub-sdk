@@ -16,6 +16,7 @@ export declare class JubJub extends EventEmitter {
     private visibilityHandler;
     /** Tier-2 only: keeps the short-lived signed URL fresh during playback. */
     private refresher;
+    private attachedContentId;
     /** Tier-2 only: mid-playback fail-closed gate (single instance, no stacking). */
     private midPlaybackGate;
     constructor(options?: JubJubOptions);

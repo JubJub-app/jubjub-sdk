@@ -257,8 +257,16 @@ export class Approval {
    * allowance and `requiredMicro`, and never above the ceiling. Returns true
    * when an approve transaction was sent, false when the allowance already
    * covered it.
+   *
+   * `exact`: approve `requiredMicro` itself, not the standing amount. Used
+   * for an unpaid tab (402 tab_unpaid), where the viewer is shown one figure
+   * (the tab plus the floor) and the wallet must ask for that figure.
    */
-  async ensureSpenderApproved(spender: string, requiredMicro: number): Promise<boolean> {
+  async ensureSpenderApproved(
+    spender: string,
+    requiredMicro: number,
+    exact = false,
+  ): Promise<boolean> {
     if (!/^0x[0-9a-fA-F]{40}$/.test(spender)) {
       throw new Error(`Invalid spender address from the backend: ${spender}`);
     }
@@ -281,7 +289,8 @@ export class Approval {
 
     const client = this.wallet.getClient();
     if (!client) throw new Error('No wallet client');
-    const amount = this.standingAllowance > required ? this.standingAllowance : required;
+    const amount =
+      exact || this.standingAllowance <= required ? required : this.standingAllowance;
     const hash = await client.writeContract({
       address: this.usdc,
       abi: ERC20_ABI,

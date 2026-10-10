@@ -119,7 +119,14 @@ let _sessionToken: string | null = null;
  * the same wallet flow as the router approval. Cleared once approved.
  */
 let _pendingSpenderApproval:
-  | { spender: string; requiredMicro: number; token: string | null; chainId: number | null }
+  | {
+      spender: string;
+      requiredMicro: number;
+      token: string | null;
+      chainId: number | null;
+      // tab_unpaid: approve exactly requiredMicro (the figure the viewer saw).
+      exact: boolean;
+    }
   | null = null;
 
 // ---------------------------------------------------------------------------
@@ -302,6 +309,8 @@ export class JubJub extends EventEmitter {
   private visibilityHandler: (() => void) | null = null;
   /** Tier-2 only: keeps the short-lived signed URL fresh during playback. */
   private refresher: PlaybackUrlRefresher | null = null;
+  // The id attach() last ran for, so a tab_unpaid stop can start a new session.
+  private attachedContentId: string | null = null;
   /** Tier-2 only: mid-playback fail-closed gate (single instance, no stacking). */
   private midPlaybackGate: { remove: () => void } | null = null;
 
@@ -977,12 +986,15 @@ export class JubJub extends EventEmitter {
    */
   private _announceFunding(err: FundingRequiredError | FundingUnverifiableError): void {
     if (isFundingRequiredError(err)) {
-      if (err.reason === 'insufficient_allowance' && err.spender) {
+      // insufficient_allowance, or an unpaid tab the allowance does not cover
+      // (tab_unpaid short on BALANCE needs USDC, not an approval).
+      if (err.needsApproval && err.spender) {
         _pendingSpenderApproval = {
           spender: err.spender,
           requiredMicro: err.requiredMicro,
           token: err.token,
           chainId: err.chainId,
+          exact: err.reason === 'tab_unpaid',
         };
       }
       this.emit('funding:required', err);
@@ -1031,15 +1043,35 @@ export class JubJub extends EventEmitter {
         // A 402 allowance stop: approve the backend-named spender first, then
         // ask for a URL once. The refresher itself never retries a 402.
         const approval = this.approval;
+        const tabUnpaid = isFundingRequiredError(cause) && cause.reason === 'tab_unpaid';
         const approveFirst =
           isFundingRequiredError(cause) &&
-          cause.reason === 'insufficient_allowance' &&
+          cause.needsApproval &&
           cause.spender &&
           approval
             ? approval
-                .ensureSpenderApproved(cause.spender, cause.requiredMicro)
+                .ensureSpenderApproved(cause.spender, cause.requiredMicro, tabUnpaid)
                 .then(() => { _pendingSpenderApproval = null; })
             : Promise.resolve();
+        if (tabUnpaid) {
+          // The backend ENDED this session for an unpaid tab, so no refresh
+          // can revive it. Approve the figure shown, then start a new session:
+          // the open gate checks the tab again and the crossing collects it.
+          void approveFirst
+            .then(async () => {
+              const contentId = this.attachedContentId;
+              // Tear down the ended session's loop, tracker and overlay. Its
+              // close may be refused (the backend already closed it): fine.
+              await this.disconnect().catch(() => undefined);
+              if (!contentId) return;
+              await this.attach(contentId, video);
+              if (this.session) video.play().catch(() => {});
+            })
+            .catch((approveErr) => {
+              console.warn('[JubJub] USDC approval not completed', approveErr);
+            });
+          return;
+        }
         void approveFirst
           .then(() => this.refresher?.refreshNow('manual') ?? false)
           .catch((approveErr) => {
@@ -1076,6 +1108,7 @@ export class JubJub extends EventEmitter {
 
   async attach(contentId: string, video: HTMLVideoElement): Promise<void> {
     this.video = video;
+    this.attachedContentId = contentId || null;
 
     if (!contentId) {
       console.warn('[JubJub] No content ID — video plays without payments.');
@@ -1232,7 +1265,13 @@ export class JubJub extends EventEmitter {
           (pending.token == null ||
             pending.token.toLowerCase() === String(this.contentInfo.usdc_address).toLowerCase())
         ) {
-          if (await this.approval.ensureSpenderApproved(pending.spender, pending.requiredMicro)) {
+          if (
+            await this.approval.ensureSpenderApproved(
+              pending.spender,
+              pending.requiredMicro,
+              pending.exact,
+            )
+          ) {
             didApprove = true;
           }
           _pendingSpenderApproval = null;
