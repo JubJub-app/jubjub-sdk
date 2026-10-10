@@ -261,3 +261,65 @@ test('the refresher stops on a 402: paused, reported once, no automatic retry', 
     refresher.stop();
   }
 });
+
+// ---------------------------------------------------------------------------
+// tab_unpaid (backend 2026-10-10): the wallet owes for earlier viewing.
+// ---------------------------------------------------------------------------
+
+function bodyTab(short: 'allowance' | 'balance'): string {
+  return JSON.stringify({
+    detail: {
+      reason: 'tab_unpaid',
+      code: 'tab_unpaid',
+      message: 'You have $1.20 unpaid from earlier viewing.',
+      owed_micro: 1200000,
+      owed_usd: 1.2,
+      required_micro: 1700000,
+      required_approval_usd: 1.7,
+      short,
+      allowance_micro: 500000,
+      balance_micro: 5000000,
+      spender: SPENDER,
+      token: USDC,
+      chain_id: 8453,
+    },
+  });
+}
+
+test('402 tab_unpaid parses with the tab and the approval figure', () => {
+  const err = parseFundingError(402, bodyTab('allowance'));
+  assert.ok(err instanceof FundingRequiredError);
+  const e = err as FundingRequiredError;
+  assert.equal(e.reason, 'tab_unpaid');
+  assert.equal(e.owedMicro, 1200000);
+  assert.equal(e.requiredMicro, 1700000);
+  assert.equal(e.short, 'allowance');
+  assert.equal(e.spender, SPENDER);
+  assert.equal(e.needsApproval, true);
+});
+
+test('tab_unpaid short on allowance asks to approve the exact figure', () => {
+  const e = parseFundingError(402, bodyTab('allowance')) as FundingRequiredError;
+  const m = fundingMessage(e);
+  assert.equal(m.title, 'You have $1.20 unpaid from earlier viewing');
+  assert.equal(m.sub, 'Approve $1.70 to settle it and keep watching.');
+  assert.equal(m.action, 'Approve $1.70');
+});
+
+test('tab_unpaid short on balance asks for USDC, not an approval', () => {
+  const e = parseFundingError(402, bodyTab('balance')) as FundingRequiredError;
+  assert.equal(e.needsApproval, false);
+  const m = fundingMessage(e);
+  assert.equal(m.title, 'You have $1.20 unpaid from earlier viewing');
+  assert.match(m.sub, /Add USDC \(Base\) so your wallet holds at least \$1\.70/);
+  assert.equal(m.action, 'Try again');
+});
+
+test('the older reasons carry no tab fields', () => {
+  const e = parseFundingError(402, body402('insufficient_allowance')) as FundingRequiredError;
+  assert.equal(e.owedMicro, null);
+  assert.equal(e.short, null);
+  assert.equal(e.needsApproval, true);
+  const b = parseFundingError(402, body402('insufficient_balance')) as FundingRequiredError;
+  assert.equal(b.needsApproval, false);
+});

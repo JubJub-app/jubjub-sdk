@@ -58,7 +58,11 @@ export declare class Approval {
      * allowance and `requiredMicro`, and never above the ceiling. Returns true
      * when an approve transaction was sent, false when the allowance already
      * covered it.
+     *
+     * `exact`: approve `requiredMicro` itself, not the standing amount. Used
+     * for an unpaid tab (402 tab_unpaid), where the viewer is shown one figure
+     * (the tab plus the floor) and the wallet must ask for that figure.
      */
-    ensureSpenderApproved(spender: string, requiredMicro: number): Promise<boolean>;
+    ensureSpenderApproved(spender: string, requiredMicro: number, exact?: boolean): Promise<boolean>;
     ensureApproved(): Promise<boolean>;
 }

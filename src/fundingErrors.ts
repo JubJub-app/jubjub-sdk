@@ -8,7 +8,17 @@
  *   402 {"detail": {"reason": "insufficient_allowance" | "insufficient_balance",
  *                   "message", "required_micro", "allowance_micro",
  *                   "balance_micro", "spender", "token", "chain_id"}}
+ *   402 {"detail": {"reason": "tab_unpaid", "code": "tab_unpaid", "message",
+ *                   "owed_micro", "owed_usd", "required_micro",
+ *                   "required_approval_usd", "short": "allowance" | "balance",
+ *                   "allowance_micro", "balance_micro", "spender", "token",
+ *                   "chain_id"}}
  *   503 {"detail": {"reason": "funding_unverifiable", "message"}}
+ *
+ * tab_unpaid (session open, and a session the backend ended mid-play): the
+ * wallet owes for earlier viewing, so allowance AND balance must cover the
+ * tab plus the floor. required_micro is that total, and it is exactly what
+ * the approve button asks for.
  *
  * Pure and DOM-free so it is unit-tested directly (test/fundingErrors.test.ts).
  * Parsing NEVER throws: a missing or garbled body yields null and the caller
@@ -21,7 +31,10 @@ export const USDC_MICRO = 1_000_000;
 /** The backend's minimum; used only when a 402 body omits required_micro. */
 export const DEFAULT_REQUIRED_MICRO = 500_000;
 
-export type FundingRequiredReason = 'insufficient_allowance' | 'insufficient_balance';
+export type FundingRequiredReason =
+  | 'insufficient_allowance'
+  | 'insufficient_balance'
+  | 'tab_unpaid';
 
 /** "$0.50" from 500000 micro USDC. */
 export function formatMicroUsdc(micro: number): string {
@@ -51,6 +64,23 @@ export function fundingMessage(
     };
   }
   const need = formatMicroUsdc(err.requiredMicro);
+  if (err.reason === 'tab_unpaid') {
+    const owed = formatMicroUsdc(err.owedMicro ?? 0);
+    if (err.short === 'balance') {
+      return {
+        title: `You have ${owed} unpaid from earlier viewing`,
+        sub:
+          `Add USDC (${networkLabel(err.chainId)}) so your wallet holds at least ${need}, ` +
+          'then try again to settle it and keep watching.',
+        action: 'Try again',
+      };
+    }
+    return {
+      title: `You have ${owed} unpaid from earlier viewing`,
+      sub: `Approve ${need} to settle it and keep watching.`,
+      action: `Approve ${need}`,
+    };
+  }
   if (err.reason === 'insufficient_allowance') {
     return {
       title: `Approve at least ${need} USDC for JubJub streaming`,
@@ -88,6 +118,10 @@ export class FundingRequiredError extends Error {
   readonly spender: string | null;
   readonly token: string | null;
   readonly chainId: number | null;
+  /** tab_unpaid only: what the wallet owes from earlier viewing. */
+  readonly owedMicro: number | null;
+  /** tab_unpaid only: which fell short. 'balance' means approving cannot help. */
+  readonly short: 'allowance' | 'balance' | null;
 
   constructor(fields: {
     reason: FundingRequiredReason;
@@ -98,6 +132,8 @@ export class FundingRequiredError extends Error {
     spender?: string | null;
     token?: string | null;
     chainId?: number | null;
+    owedMicro?: number | null;
+    short?: 'allowance' | 'balance' | null;
   }) {
     super(fields.message || fields.reason);
     // Keep instanceof working when compiled to ES5-style classes.
@@ -112,6 +148,19 @@ export class FundingRequiredError extends Error {
     this.spender = fields.spender ?? null;
     this.token = fields.token ?? null;
     this.chainId = fields.chainId ?? null;
+    this.owedMicro = fields.owedMicro ?? null;
+    this.short = fields.short ?? null;
+  }
+
+  /**
+   * True when the fix is an approval: insufficient_allowance, or a tab the
+   * allowance does not cover. tab_unpaid short on BALANCE is not one.
+   */
+  get needsApproval(): boolean {
+    return (
+      this.reason === 'insufficient_allowance' ||
+      (this.reason === 'tab_unpaid' && this.short !== 'balance')
+    );
   }
 }
 
@@ -177,7 +226,9 @@ export function parseFundingError(
   }
   if (
     status === 402 &&
-    (reason === 'insufficient_allowance' || reason === 'insufficient_balance')
+    (reason === 'insufficient_allowance' ||
+      reason === 'insufficient_balance' ||
+      reason === 'tab_unpaid')
   ) {
     return new FundingRequiredError({
       reason,
@@ -188,6 +239,11 @@ export function parseFundingError(
       spender: addr(detail.spender),
       token: addr(detail.token),
       chainId: num(detail.chain_id),
+      owedMicro: reason === 'tab_unpaid' ? num(detail.owed_micro) : null,
+      short:
+        reason === 'tab_unpaid' && (detail.short === 'allowance' || detail.short === 'balance')
+          ? detail.short
+          : null,
     });
   }
   return null;
