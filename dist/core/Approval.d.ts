@@ -2,7 +2,7 @@ import type { Wallet } from './Wallet';
 export declare class Approval {
     private wallet;
     private usdc;
-    private router;
+    private spender;
     private chain;
     private standingAllowance;
     private sessionBound;
@@ -51,8 +51,9 @@ export declare class Approval {
     /**
      * Make sure `spender` may pull at least `requiredMicro` USDC from the viewer.
      * Used when the backend answers a session create or URL refresh with 402
-     * insufficient_allowance: the spender comes from THAT response (the creator
-     * pool the backend actually draws against), never a hard-coded address.
+     * insufficient_allowance: the spender comes from THAT response (the
+     * streaming spender the backend actually draws against, the same address
+     * playback-info serves as `payment_router`), never a hard-coded address.
      *
      * Same bounded standing amount as approve() — the larger of the standing
      * allowance and `requiredMicro`, and never above the ceiling. Returns true
