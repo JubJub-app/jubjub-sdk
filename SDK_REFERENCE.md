@@ -1,6 +1,6 @@
 # JubJub SDK Reference
 
-**Version:** 2.1.2
+**Version:** 2.1.6
 **Chain:** Base (Coinbase L2) — `network: 'mainnet'` → Base mainnet (default), `network: 'testnet'` → Base Sepolia
 **Status:** Live on Base mainnet. Omitting `network` means mainnet; pass `network: 'testnet'` to develop against Sepolia.
 
@@ -50,7 +50,7 @@ const { content_id } = await res.json();
 
 ```html
 <video id="player" src="https://your-cdn.com/video.mp4" controls></video>
-<script src="https://cdn.jubjub.app/sdk.js"></script>
+<script src="https://jubjub-app.github.io/jubjub-sdk/dist/jubjub-sdk.umd.js"></script>
 <script>
   JubJub.play('cnt_abc123', document.getElementById('player'));
 </script>
@@ -62,15 +62,15 @@ That's it.
 
 ## What happens when a viewer presses play
 
-1. SDK fetches payment config from JubJub API (public endpoint, no auth)
-2. Wallet connect prompt appears (MetaMask, Coinbase Wallet, Rainbow)
-3. USDC spending approved (one-time per wallet)
-4. Streaming session opens on Base
+1. SDK fetches payment config from JubJub API (public endpoint, no auth). The video is paused until payment is in place (fail closed)
+2. Wallet connect prompt appears (MetaMask, Coinbase Wallet, Rainbow), then one free signature per page proves the wallet
+3. USDC allowance checked against the streaming spender (`payment_router` in playback-info). The viewer approves a standing allowance when the current one is below the SDK's threshold; not on every play
+4. Streaming session opens. The backend refuses (402) when allowance or balance is below its floor or a tab is unpaid; the gate shows what to do
 5. Cost overlay appears on the video: `$0.0042 · 0:42 · Powered by JubJub`
 6. Heartbeat fires every 6 seconds of playback
-7. Video pauses — payments pause. Seek backwards — cost stays (accumulative). Seek forward — no charge for skipped content.
-8. Tab closes — settlement fires on-chain with exact playback seconds
-9. USDC flows: viewer -> router -> content contract -> catalogue -> creator
+7. Video pauses: payments pause. Seek backwards: cost stays (accumulative). Seek forward: no charge for skipped content. A backgrounded tab is charged for the time that actually played
+8. Tab closes: a beacon closes the session with the exact playback seconds and settlement happens on-chain. Hiding the tab closes the session only while the video is paused or ended; play after a closed session opens a new one first
+9. USDC flows: viewer -> streaming spender -> content contract -> catalogue -> creator
 
 ---
 
@@ -163,7 +163,7 @@ Required: `media_url` and at least one of `creator_email` or `creator_wallet`.
   "title": "Breaking News Coverage",
   "price_per_minute_usdc": 0.005,
   "content_contract": "0x...",
-  "payment_router": "0xf5207b827f90b15da403c45A339BDC4a87BC258E",
+  "payment_router": "0x...",
   "usdc_address": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
   "chain_id": 84532,
   "chain_name": "base-sepolia"
@@ -173,8 +173,14 @@ Required: `media_url` and at least one of `creator_email` or `creator_wallet`.
 > The `chain_id` / `chain_name` / addresses above are a **testnet**
 > example. On mainnet content the backend returns `chain_id: 8453`
 > (`base`) with the corresponding Base mainnet addresses. The SDK
-> verifies this `chain_id` matches its configured `network` and throws
-> on mismatch.
+> resolves its RPC from this `chain_id`.
+>
+> `payment_router` carries the **streaming spender**: the address the
+> viewer's USDC allowance is granted to and that the backend draws against
+> (`sdk_routes._streaming_spender`). On the current rail that is the creator
+> pool, not the payment router contract; the field name is historical. It is
+> the same address a 402 names as `spender`, so Step 3's approval and a 402's
+> request always point at one contract.
 
 ---
 
@@ -349,6 +355,26 @@ its own platform" when JubJub holds no file). The older backend's bare 400
 "has no ownership contract deployed" is read the same way, so the page never
 calls that a payment-service outage.
 
+2.1.6 (audit fixes, 2026-10-24):
+
+- Any 402 from session create or URL refresh whose body carries a reason or a
+  message is a `FundingRequiredError`. A reason this bundle predates parses
+  with `reason: 'unknown'`, `backendReason` and `backendMessage`, and the gate
+  shows the backend's message as its title with a "Try again" button; the
+  page token is kept (a 402 is a funding refusal, not an auth failure). Before
+  this a new reason read "Payment service unavailable" and forgot the token.
+- Hiding the tab closes the session only while the video is paused or ended.
+  Whenever play resumes after the session was closed, the SDK pauses, opens a
+  new session (`disconnect()` then `attach()`, wallet and token held) and
+  resumes from the same position once it is open; a refusal is gated with
+  the backend's words.
+- `CostTracker` detects seeks from `seeking`/`seeked` and bounds each
+  `timeupdate` delta by the wall clock that passed (times the playback rate)
+  instead of dropping every delta over 2 seconds, so a background-throttled
+  tab is charged for the time that played and a jump is never credited.
+- `showCostOverlay` is typed on `JubJubInitConfig`; the dead Privy import
+  left `Wallet.ts`; `payment_router` documented as the streaming spender.
+
 ### Static shorthand
 
 ```javascript
@@ -382,6 +408,7 @@ sdk.on('ready', () => {});
 | `JubJub.play(contentId, video, options?)` | `JubJub` | Static shorthand. Errors emitted, not thrown. |
 | `JubJub.search(params?)` | `Promise<SearchResponse>` | Search JubJub's whole discoverable catalogue with the key from `init()`. Free. Filters: `topic` free-text plus facets (`domain`, `contentType`, `pacing`, `musicPresent`, …); page with `cursor` from the response's `next_cursor` (null = exhausted); `includeUnanalysed: true` also returns registered imports that live on their platform (the card's `platform_video_url`), which have nothing to play here. A card's `content_id` feeds straight into `data-jubjub-content-id` / `JubJub.play()`. |
 | `JubJub.setSessionToken(token \| null)` | `void` | Hand over (or forget) a page-level session token; later videos skip the signature step. |
+| `JubJub.init({ showCostOverlay })` | `void` | Page-level overlay switch for auto-discovered videos (default true); `JubJubOptions.showCostOverlay` wins per video. Typed since 2.1.6. |
 | `JubJub.resetWallet()` | `void` | Forget the page-shared wallet, e.g. before re-`init` with another provider. |
 | `JubJub.connectBrowserWallet(network?)` | `Promise<WalletLike>` | Connect MetaMask/Coinbase/injected wallet. Switches to the active network's chain — Base mainnet on `'mainnet'` (default), Base Sepolia on `'testnet'`. |
 | `sdk.attach(contentId, video)` | `Promise<void>` | Full setup: wallet, approve, session, tracking. |
@@ -394,19 +421,29 @@ sdk.on('ready', () => {});
 
 ## SDK behaviours
 
+Every JubJub-tagged video is FAIL CLOSED: it stays paused under a gate until
+payment is in place, and the gate says what to do. Videos without JubJub
+attributes are never touched.
+
 | Scenario | Behaviour |
 |---|---|
-| No content ID | Fails silently. Video plays free. SDK invisible. |
-| Invalid content ID (404) | Fails silently. Video plays free. |
+| No content ID and no creator attribute | SDK ignores the video. It plays as the page set it. |
+| Invalid content ID (404) or playback-info unavailable | Gate: "Unable to load payment details". Video stays paused. |
 | Video pauses | Payments pause. |
 | Seek backwards | Cost stays. Accumulative, never decreases. |
-| Seek forward | No charge for skipped content. |
-| Tab close | Beacon fires settlement with exact seconds watched. |
-| Payment fails | Video still plays. Error emitted via callback. |
-| No wallet extension | Error emitted. Video still plays. |
-| Wallet connection declined | Error emitted. Video still plays. |
+| Seek forward | No charge for skipped content. Seeks are detected from the element's `seeking` and `seeked` events. |
+| Tab backgrounded (`timeupdate` throttled) | Time actually played is charged, bounded by the wall clock. |
+| Tab close | Beacon closes the session with the exact seconds watched; settlement follows on-chain. |
+| Tab hidden | Beacon closes the session only while the video is paused or ended. Background audio keeps it open; the idle sweep closes an abandoned one. |
+| Play after the session was closed | SDK pauses, opens a new session, resumes from the same position once it is open. A refusal is shown in the gate. |
+| 402 from the backend (allowance, balance, unpaid tab) | Gate with the backend's figure; the approve button asks for exactly that. `funding:required` emitted. |
+| 402 with a reason this bundle does not know | Gate with the backend's message (`FundingRequiredError`, reason `'unknown'`). No approval is guessed; the page token is kept. |
+| No wallet | Gate: "Connect a wallet to watch". Video stays paused. `payment:required` emitted. |
+| Wallet connection or signature declined | Gate naming the refusal ("You cancelled the request"). Video stays paused. |
+| Payment service error | Gate: "Payment service unavailable". Video stays paused. |
 
-JubJub never blocks video playback.
+`payment:required` carries the gate's title, sub and button text, so a host
+rendering its own gate shows the same words.
 
 ---
 
@@ -430,7 +467,7 @@ The auth chain in `verify_token_cookie` checks in order: platform key -> agent k
 - Compete with YouTube or TikTok
 - Custody funds (smart contracts are non-custodial)
 - Require creators to change their workflow
-- Block playback if payments fail
+- Play a JubJub-tagged video for free when payment is not in place (fail closed since 2.0)
 - Charge viewers without explicit wallet connection
 - Require crypto knowledge from developers or creators
 
@@ -440,19 +477,23 @@ The auth chain in `verify_token_cookie` checks in order: platform key -> agent k
 
 | | Size |
 |---|---|
-| UMD (uncompressed) | 288 KB |
-| UMD (gzipped) | 89 KB |
+| UMD (uncompressed) | 335 KB (2.1.6, `dist/jubjub-sdk.umd.js`) |
+| UMD (gzipped) | 103 KB |
 | Dependency | viem (bundled) |
 | Browser support | ES2020+ |
-| Peer dependency (optional) | @privy-io/js-sdk-core |
+| Peer dependency (optional) | @privy-io/js-sdk-core (declared; not imported by the bundle) |
+
+`dist/` is built by hand (`npm run build`) and committed; GitHub Pages serves
+`main`'s `dist/` with no version pin. `JubJub.version` reports the
+package.json version the bundle was built from.
 
 ---
 
-## Current status (April 2026)
+## Current status (October 2026)
 
 The backend is live on Base mainnet. The SDK defaults to `network:
-'testnet'` (Base Sepolia) and runs against mainnet when initialised with
-`network: 'mainnet'`.
+'mainnet'` (Base, chain `8453`) and runs against Base Sepolia when
+initialised with `network: 'testnet'`.
 
 **Working (testnet and mainnet):**
 - Platform content registration with ownership token deployment
@@ -466,7 +507,7 @@ The backend is live on Base mainnet. The SDK defaults to `network:
 
 **Pending:**
 - Privy zero-config wallet (no browser extension needed)
-- CDN hosting for SDK bundle (`cdn.jubjub.app/sdk.js`)
+- A versioned CDN URL for the bundle (today: GitHub Pages serving `main`'s `dist/`, unpinned)
 - npm publish (`@jubjub/sdk`)
 - Secondary market for brand tokens
 - Dynamic pricing per content

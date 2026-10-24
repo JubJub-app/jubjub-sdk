@@ -33,14 +33,19 @@ Add pay-per-view streaming payments to any video on your website.
 
 That's it. Videos with JubJub attributes get pay-per-view. Videos without them play free.
 
-When a viewer with MetaMask presses play:
+When a viewer with a wallet presses play:
 1. Content auto-registers (ownership token deploys on Base)
-2. Wallet connects (one-time per page)
-3. USDC approved (one-time per wallet)
-4. Streaming payments flow at $0.005/min
-5. Creator earns in real-time on-chain
+2. Wallet connects and signs once per page (free, no gas)
+3. USDC allowance checked. The viewer approves a standing allowance to
+   JubJub's streaming spender when the current allowance is below the SDK's
+   threshold (see Allowance below); not on every play, and not once for ever
+4. Streaming payments accrue at the content's per-minute price
+5. Creator earns on-chain when the session settles
 
-Viewers without a wallet extension see no prompts — videos play free.
+Playback is fail closed. A viewer without a wallet, who declines a prompt, or
+whose USDC cannot fund a session sees a gate over the paused video saying what
+to do; the video does not play until payment is in place. Videos without JubJub
+attributes are never touched.
 
 **JubJub handles the money stream, not the video stream.** Your video serves from your own CDN.
 
@@ -52,7 +57,7 @@ Viewers without a wallet extension see no prompts — videos play free.
 | `data-jubjub-creator` | ...or this | Creator email or wallet (triggers auto-registration) |
 | `data-jubjub-title` | No | Video title (defaults to page title) |
 | `data-jubjub-media-url` | No | Media URL for hashing (defaults to video src) |
-| `data-jubjub-price` | No | Price per minute override (default $0.005) |
+| `data-jubjub-price` | No | Price per minute override (USDC; the backend bounds it) |
 | `data-jubjub-disabled` | No | If present, SDK ignores this video |
 
 ## Advanced: Manual Control
@@ -100,9 +105,9 @@ JubJub.play(content_id, videoElement);
 ## How It Works
 
 ```
-Viewer watches    Wallet connects    USDC streams      Creator earns
-   video     -->   (one-time)   -->  per second   -->  automatically
-   [CDN]         [MetaMask/etc]    [Base Sepolia]    [Brand tokens]
+Viewer watches    Wallet connects    USDC accrues      Creator earns
+   video     -->   (one-time)   -->  per segment  -->  automatically
+   [CDN]         [MetaMask/etc]        [Base]        [Brand tokens]
 ```
 
 JubJub mints an ownership token for every piece of content. Revenue flows through smart contracts on Base and distributes automatically to token holders.
@@ -189,18 +194,40 @@ uses Base mainnet (chain `8453`); `network: 'testnet'` uses Base Sepolia
 explorer together. An integration that omits `network` is on mainnet and
 moves real USDC; pass `'testnet'` explicitly to develop against Sepolia.
 
-Contract addresses (USDC, payment router) are **not** baked into the
-SDK — they are returned by the backend playback-info response per
-content, so they're always correct for the chain the content lives on.
+Contract addresses are **not** baked into the SDK. The backend's
+playback-info response carries them per content, so they are always right
+for the chain the content lives on:
 
-The addresses below are the **testnet** (Base Sepolia) values, shown
-for reference only:
-
-| Contract | Address (Base Sepolia testnet) |
+| Field | What it is |
 |---|---|
-| Payment Router | `0xf5207b827f90b15da403c45A339BDC4a87BC258E` |
-| USDC | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` |
-| Chain ID | `84532` (mainnet: `8453`) |
+| `usdc_address` | The USDC token the viewer approves and is charged in |
+| `payment_router` | The streaming spender: the address the viewer's USDC allowance is granted to. This is the address the backend draws against for streaming (the creator pool on the current rail), and the same address a 402 names as `spender` |
+| `chain_id` | `8453` on mainnet, `84532` on Base Sepolia |
+
+## Allowance
+
+The viewer grants the streaming spender a standing USDC allowance (default
+$10, `streamingAllowanceUsd` on `init()`, never unlimited, capped at $500) and
+streams against it signature-free. The SDK asks for a new approval only when
+the remaining allowance is below its own threshold (the larger of $2 and the
+price of a 120-minute session). The backend separately requires at least $0.50
+of allowance and balance, plus any unpaid tab, before it opens a session, and
+answers 402 otherwise; the SDK then shows the backend's requirement and the
+approve button asks for exactly that.
+
+## Sessions, tabs and seeks
+
+- A streaming session is open while paid playback is happening. Closing the
+  tab (`beforeunload`, `pagehide`) sends a beacon that closes it with the
+  seconds watched. Hiding the tab closes it only when the video is paused or
+  has ended; background audio keeps the session open, and the backend's idle
+  sweep closes a session that is truly abandoned.
+- Playback never continues against a closed session. When play resumes after
+  the session was closed, the SDK pauses, opens a new session and resumes
+  from the same position only once it is open; a refusal is shown in the gate.
+- Billing follows time actually played. Seeks (the element's `seeking` and
+  `seeked` events) are never charged, forward or back; a backgrounded tab whose
+  `timeupdate` events arrive seconds apart is charged for the time that passed.
 
 ## License
 
