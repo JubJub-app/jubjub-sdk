@@ -4,11 +4,26 @@ Add pay-per-view streaming payments to any video on your website.
 
 ## Quick Start
 
+```html
+<script src="https://jubjub-app.github.io/jubjub-sdk/stable/jubjub-sdk.umd.js"></script>
+```
+
+That is the stable address: it moves only after a release has passed the full
+test suite. To pin a version instead:
+
+```html
+<script src="https://jubjub-app.github.io/jubjub-sdk/v/2.2.0/jubjub-sdk.umd.js"></script>
+```
+
+(The older `.../jubjub-sdk/dist/jubjub-sdk.umd.js` address is legacy: it is
+main's build output with no version pin. It keeps working, but new
+integrations should load `stable/` or `v/<version>/`.)
+
 1. Get your API key at [jubjubapp.com/developers](https://jubjubapp.com/developers)
 2. Add to your site template:
 
 ```html
-<script src="https://jubjub-app.github.io/jubjub-sdk/dist/jubjub-sdk.umd.js"></script>
+<script src="https://jubjub-app.github.io/jubjub-sdk/stable/jubjub-sdk.umd.js"></script>
 <script>JubJub.init({ platformKey: 'pk_YOUR_KEY' });</script>
 
 <!-- Optional: surface JubJub's whole catalogue on your site -->
@@ -36,11 +51,32 @@ That's it. Videos with JubJub attributes get pay-per-view. Videos without them p
 When a viewer with a wallet presses play:
 1. Content auto-registers (ownership token deploys on Base)
 2. Wallet connects and signs once per page (free, no gas)
-3. USDC allowance checked. The viewer approves a standing allowance to
-   JubJub's streaming spender when the current allowance is below the SDK's
-   threshold (see Allowance below); not on every play, and not once for ever
-4. Streaming payments accrue at the content's per-minute price
+3. USDC allowance checked. The viewer approves a standing allowance (their
+   pot, $10 by default) to JubJub's streaming spender only when the current
+   allowance is below $0.50, the backend's floor; see The pot below
+4. Streaming payments accrue at the content's per-minute price, for the
+   seconds actually played
 5. Creator earns on-chain when the session settles
+
+## The pot: approve once
+
+The viewer approves an amount once. That approval is their pot, and every
+JubJub video on every site draws from it:
+
+- They are asked to approve only when the pot is below $0.50. With $0.50 or
+  more approved they are never asked again, on any site, until the pot runs
+  below that.
+- They are charged only for seconds actually played. Paused, hidden and
+  paused, ended, or nothing playing means no charge.
+- When a video ends, its session closes at once and charging stops.
+- If they play again (a rewatch, or another video), a session reopens quietly
+  in the background and draws from the same pot. No prompt, no wallet popup.
+- A single session is capped at $2.00. When a session reaches the cap the SDK
+  closes it and quietly opens a new one from the same pot, and playback
+  continues without a pause.
+- The only payment prompt a viewer ever sees is when the pot cannot cover
+  continued viewing. Then the video pauses under a gate that shows the
+  backend's figures, and the approve button asks for exactly what is needed.
 
 Playback is fail closed. A viewer without a wallet, who declines a prompt, or
 whose USDC cannot fund a session sees a gate over the paused video saying what
@@ -207,27 +243,39 @@ for the chain the content lives on:
 ## Allowance
 
 The viewer grants the streaming spender a standing USDC allowance (default
-$10, `streamingAllowanceUsd` on `init()`, never unlimited, capped at $500) and
-streams against it signature-free. The SDK asks for a new approval only when
-the remaining allowance is below its own threshold (the larger of $2 and the
-price of a 120-minute session). The backend separately requires at least $0.50
-of allowance and balance, plus any unpaid tab, before it opens a session, and
-answers 402 otherwise; the SDK then shows the backend's requirement and the
-approve button asks for exactly that.
+$10, `streamingAllowanceUsd` on `init()`, never unlimited, capped at $500,
+never below $0.50) and streams against it signature-free. Before opening a
+session the SDK reads the allowance and asks for a new approval only when it
+is below $0.50 (`PREFLIGHT_FLOOR_MICRO`, the same figure as the backend's
+`FUNDING_FLOOR_MICRO`). It never approves on a guess above that. The backend
+requires at least $0.50 of allowance and balance, plus any unpaid tab, before
+it opens a session, and answers 402 otherwise; the SDK then shows the
+backend's requirement and the approve button asks for exactly that figure.
+Before 2.2.0 the SDK's own threshold was the larger of $2 and a 120-minute
+session, so a viewer who had approved $1 elsewhere was asked again here.
 
 ## Sessions, tabs and seeks
 
-- A streaming session is open while paid playback is happening. Closing the
-  tab (`beforeunload`, `pagehide`) sends a beacon that closes it with the
-  seconds watched. Hiding the tab closes it only when the video is paused or
-  has ended; background audio keeps the session open, and the backend's idle
-  sweep closes a session that is truly abandoned.
+- A streaming session is open while paid playback is happening. When the
+  video ends the SDK closes the session at once with the seconds played.
+  Closing the tab (`beforeunload`, `pagehide`) sends a beacon that closes it
+  with the seconds watched. Hiding the tab closes it only when the video is
+  paused or has ended; background audio keeps the session open, and the
+  backend's idle sweep closes a session that is truly abandoned.
+- Every segment's answer is read. When the backend closes a session (the
+  $2.00 per-session cap, an unpaid tab, the idle sweep) the SDK stops
+  metering it and never sends `/close` for it. On the cap it opens a new
+  session while the video keeps playing; on any other closure it pauses,
+  opens a new session and resumes. A session capped on a gated-URL refresh
+  (409 `session_capped`) is handled the same way.
 - Playback never continues against a closed session. When play resumes after
-  the session was closed, the SDK pauses, opens a new session and resumes
-  from the same position only once it is open; a refusal is shown in the gate.
-- Billing follows time actually played. Seeks (the element's `seeking` and
-  `seeked` events) are never charged, forward or back; a backgrounded tab whose
-  `timeupdate` events arrive seconds apart is charged for the time that passed.
+  the session was closed (ended, cap, beacon, idle), the SDK opens a new
+  session and resumes from the same position once it is open, without a
+  prompt; a 402 is shown in the gate with the backend's words and a retry.
+- Billing follows time actually played. Nothing accrues while paused or after
+  the end. Seeks (the element's `seeking` and `seeked` events) are never
+  charged, forward or back; a backgrounded tab whose `timeupdate` events
+  arrive seconds apart is charged for the time that passed.
 
 ## License
 

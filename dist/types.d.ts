@@ -142,6 +142,22 @@ export interface ContentInfo {
      */
     creator?: PublicProfile;
 }
+/**
+ * The body of POST /v2/streaming/sessions/{id}/segment (backend
+ * SegmentResponse). `status` is "active" while the session meters; any other
+ * value means the backend closed it and no segment may be sent to it again.
+ * `end_reason` names why (today "cap_reached" when the next segment would have
+ * taken the session over its $2.00 cap, "tab_unpaid", or null). Added in
+ * 2.2.0; an older backend omits `end_reason`, and before 2.2.0 the SDK read
+ * none of this body.
+ */
+export interface SegmentResponse {
+    session_id: string;
+    segment_count: number;
+    amount_settled: number;
+    status: string;
+    end_reason?: string | null;
+}
 export interface SessionSummary {
     sessionId: string;
     seconds: number;

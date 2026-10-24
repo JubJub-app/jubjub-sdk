@@ -11,6 +11,7 @@ function fakeVideo() {
   const video = {
     currentTime: 0,
     paused: false,
+    ended: false,
     playbackRate: 1,
     addEventListener(ev: string, fn: () => void) {
       if (!listeners.has(ev)) listeners.set(ev, new Set());
@@ -38,7 +39,16 @@ function harness() {
     },
   };
   const segments: string[] = [];
-  const api = { recordSegment: async (id: string) => { segments.push(id); } };
+  /** What the backend answers each segment with; tests set it. */
+  const answers: { next: any } = {
+    next: { session_id: 'sess_1', segment_count: 1, amount_settled: 0, status: 'active', end_reason: null },
+  };
+  const api = {
+    recordSegment: async (id: string) => {
+      segments.push(id);
+      return answers.next;
+    },
+  };
   const tracker = new CostTracker(
     video as any,
     0.006, // $0.006/min = $0.0001/s, easy arithmetic
@@ -53,8 +63,13 @@ function harness() {
     video.currentTime += mediaSeconds;
     video.fire('timeupdate');
   };
-  return { video, clock, tracker, segments, tick };
+  const outcomes: Array<{ outcome: string; response: any }> = [];
+  tracker.on('segment', (e: any) => outcomes.push(e));
+  return { video, clock, tracker, segments, tick, answers, outcomes };
 }
+
+/** Let the segment promises settle. */
+const flush = () => new Promise<void>((r) => setTimeout(r, 0));
 
 test('ordinary playback is credited in full and crosses segment boundaries', () => {
   const h = harness();
@@ -175,12 +190,131 @@ test('stop() removes every listener it added', () => {
   assert.equal(h.video.listenerCount('timeupdate'), 1);
   assert.equal(h.video.listenerCount('seeking'), 1);
   assert.equal(h.video.listenerCount('seeked'), 1);
+  assert.equal(h.video.listenerCount('ended'), 1);
   h.tracker.stop();
   assert.equal(h.video.listenerCount('timeupdate'), 0);
   assert.equal(h.video.listenerCount('seeking'), 0);
   assert.equal(h.video.listenerCount('seeked'), 0);
+  assert.equal(h.video.listenerCount('ended'), 0);
   // No segments after stop, even if the element keeps firing.
   h.video.currentTime += 60;
   h.video.fire('timeupdate');
   assert.equal(h.segments.length, 0);
+});
+
+// The pot model (Tom, 2026-10-24), rule 7: charged only for seconds actually
+// played. Nothing while paused, nothing after the end.
+
+test('nothing accrues and no segment is sent while paused, however long the pause', () => {
+  const h = harness();
+  try {
+    for (let i = 0; i < 20; i++) h.tick(0.25); // 5 s played, no boundary yet
+    assert.equal(h.segments.length, 0);
+    // Pause. Browsers fire one timeupdate at the pause with no media delta.
+    h.video.paused = true;
+    h.video.fire('pause');
+    h.tick(0, 0.05);
+    // Twenty minutes of wall clock go by while paused: a stray timeupdate
+    // carrying no media delta must not accrue the gap.
+    h.tick(0, 1200);
+    assert.equal(h.tracker.getPlaybackSeconds(), 5);
+    assert.equal(h.segments.length, 0);
+    assert.equal(h.tracker.getCost().formatted, '$0.0005');
+    // Resume: the first update after the pause carries only the media time
+    // that played since, and the same session keeps metering.
+    h.video.paused = false;
+    h.video.fire('play');
+    h.tick(0.25, 0.3);
+    assert.ok(Math.abs(h.tracker.getPlaybackSeconds() - 5.25) < 1e-9);
+    for (let i = 0; i < 3; i++) h.tick(0.25);
+    assert.ok(Math.abs(h.tracker.getPlaybackSeconds() - 6) < 1e-9);
+    assert.equal(h.segments.length, 1);
+  } finally {
+    h.tracker.stop();
+  }
+});
+
+test('after ended nothing accrues and nothing is sent, whatever the element fires', () => {
+  const h = harness();
+  try {
+    for (let i = 0; i < 28; i++) h.tick(0.25); // 7 s, one segment
+    assert.equal(h.segments.length, 1);
+    h.video.ended = true;
+    h.video.fire('ended');
+    // A late timeupdate at the end, then an hour of stray updates with the
+    // page left open.
+    h.tick(0.5, 0.5);
+    h.tick(60, 60);
+    h.tick(3600, 3600);
+    assert.ok(Math.abs(h.tracker.getPlaybackSeconds() - 7) < 1e-9);
+    assert.equal(h.segments.length, 1);
+  } finally {
+    h.tracker.stop();
+  }
+});
+
+// Rules 2 and 3: every segment answer is read.
+
+test('an active answer is announced and metering continues', async () => {
+  const h = harness();
+  try {
+    h.tick(7, 7);
+    await flush();
+    assert.equal(h.outcomes.length, 1);
+    assert.equal(h.outcomes[0].outcome, 'continue');
+    assert.equal(h.outcomes[0].response.status, 'active');
+    h.tick(6, 6);
+    assert.equal(h.segments.length, 2);
+  } finally {
+    h.tracker.stop();
+  }
+});
+
+test('the $2.00 cap answer is a rollover and no further segment goes to that session', async () => {
+  const h = harness();
+  try {
+    h.answers.next = { session_id: 'sess_1', segment_count: 4000, amount_settled: 2.0, status: 'closed', end_reason: 'cap_reached' };
+    h.tick(6, 6);
+    await flush();
+    assert.equal(h.outcomes.length, 1);
+    assert.equal(h.outcomes[0].outcome, 'rollover');
+    assert.equal(h.outcomes[0].response.end_reason, 'cap_reached');
+    // The element keeps playing while the SDK opens a new session; the
+    // capped session is sent nothing more even before the SDK tears this
+    // tracker down.
+    h.tick(6, 6);
+    h.tick(6, 6);
+    assert.equal(h.segments.length, 1);
+    assert.equal(h.tracker.getPlaybackSeconds(), 18);
+  } finally {
+    h.tracker.stop();
+  }
+});
+
+test('any other closed answer stops metering that session', async () => {
+  const h = harness();
+  try {
+    h.answers.next = { session_id: 'sess_1', segment_count: 9, amount_settled: 0.1, status: 'closed', end_reason: 'tab_unpaid' };
+    h.tick(6, 6);
+    await flush();
+    assert.equal(h.outcomes[0].outcome, 'closed');
+    h.tick(6, 6);
+    assert.equal(h.segments.length, 1);
+  } finally {
+    h.tracker.stop();
+  }
+});
+
+test('a failed segment call (null answer) keeps metering; the next segment settles it', async () => {
+  const h = harness();
+  try {
+    h.answers.next = null;
+    h.tick(6, 6);
+    await flush();
+    assert.equal(h.outcomes[0].outcome, 'continue');
+    h.tick(6, 6);
+    assert.equal(h.segments.length, 2);
+  } finally {
+    h.tracker.stop();
+  }
 });

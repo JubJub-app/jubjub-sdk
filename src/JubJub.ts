@@ -13,9 +13,19 @@ import {
   selectProvider,
   startProviderDiscovery,
 } from './walletProviders';
-import { contentNotPlayableMessage, isContentNotPlayableError } from './streamingErrors';
+import {
+  contentNotPlayableMessage,
+  isContentNotPlayableError,
+  isSessionCappedError,
+} from './streamingErrors';
 import { chainForNetwork, type NetworkFlag } from './chains';
-import { mustReopenOnPlay, shouldBeaconOnHidden } from './sessionLifecycle';
+import {
+  mustReopenNow,
+  mustReopenOnPlay,
+  reopenModeFor,
+  shouldBeaconOnHidden,
+  type ReopenMode,
+} from './sessionLifecycle';
 import {
   chainIdMatches,
   chainMismatchError,
@@ -34,7 +44,7 @@ import { ApiClient } from './api/ApiClient';
 import { Wallet } from './core/Wallet';
 import { Approval } from './core/Approval';
 import { Session } from './core/Session';
-import { CostTracker } from './core/CostTracker';
+import { CostTracker, type SegmentEvent } from './core/CostTracker';
 import { PlaybackUrlRefresher } from './core/PlaybackUrlRefresher';
 import { CostOverlay } from './ui/CostOverlay';
 import { claimUrlFor } from './claim';
@@ -315,15 +325,21 @@ export class JubJub extends EventEmitter {
   /** Tier-2 only: mid-playback fail-closed gate (single instance, no stacking). */
   private midPlaybackGate: { remove: () => void } | null = null;
   /**
-   * Set once this instance's session has been closed by the beacon (tab
-   * hidden while paused or ended, pagehide, beforeunload). Playback must
-   * never continue against it: the next `play` opens a new session first
-   * (_reopenSession) and plays only once it is open. Cleared when attach()
-   * completes.
+   * Set once this instance's session has been closed: by the beacon (tab
+   * hidden while paused or ended, pagehide, beforeunload), by the media's
+   * `ended` event (the SDK closes it at once), or by the backend (a segment
+   * answered status "closed", a refresh answered 409 session_capped). Nothing
+   * is sent against it again and /close is never called on one the backend
+   * closed. The next `play` opens a new session first (_reopenSession) and
+   * plays only once it is open. Cleared when attach() completes.
    */
   private sessionClosed = false;
   /** Bound to the video's `play` alongside the beacon handlers; see attach(). */
   private resumeHandler: (() => void) | null = null;
+  /** Bound to the video's `ended`: closes the session the moment it ends. */
+  private endedHandler: (() => void) | null = null;
+  /** 'session:end' has gone out for the current session (once per session). */
+  private sessionEndEmitted = false;
   /** A re-open is in flight; a second `play` must not start another. */
   private reopening = false;
 
@@ -1029,6 +1045,18 @@ export class JubJub extends EventEmitter {
   private _gateMidPlayback(cause?: unknown): void {
     const video = this.video;
     if (!video) return;
+    // 409 session_capped on a URL refresh (Tier 2 of the cap rule): this
+    // session did its $2.00 and the pot still covers viewing. Not a gate: mark
+    // it closed (the backend already closed it, so no /close) and roll over
+    // to a new session while the media keeps playing. A refusal of the new
+    // session pauses and gates inside _reopenSession. An ended video needs no
+    // new session; its `ended` handler has closed this one.
+    if (isSessionCappedError(cause)) {
+      console.log('[JubJub] Session reached its per-session cap on refresh; opening a new one from the pot');
+      this._markSessionClosed();
+      if (!video.ended) void this._reopenSession(reopenModeFor('rollover'));
+      return;
+    }
     // A COMPLETED VIEW IS NOT A PAYMENT FAILURE. Once the content has played to
     // its end there is nothing left to protect and nothing left to sell, so a
     // failed re-resolve must not become a paywall. This gate previously fired
@@ -1071,17 +1099,21 @@ export class JubJub extends EventEmitter {
             : Promise.resolve();
         if (tabUnpaid) {
           // The backend ENDED this session for an unpaid tab, so no refresh
-          // can revive it. Approve the figure shown, then start a new session:
-          // the open gate checks the tab again and the crossing collects it.
+          // can revive it. Approve the figure shown, then start a new session
+          // through _reopenSession: the open gate checks the tab again and the
+          // crossing collects it. Before 2.2.0 this re-ran attach() directly,
+          // after the play harness's one-shot 'payment:required' listener had
+          // settled, so a refusal here left the video paused with no gate on
+          // screen. _reopenSession renders its own gate with the backend's
+          // words and a retry (rule 8: blocked playback always shows a prompt).
           void approveFirst
             .then(async () => {
-              const contentId = this.attachedContentId;
-              // Tear down the ended session's loop, tracker and overlay. Its
-              // close may be refused (the backend already closed it): fine.
-              await this.disconnect().catch(() => undefined);
-              if (!contentId) return;
-              await this.attach(contentId, video);
-              if (this.session) video.play().catch(() => {});
+              _pendingSpenderApproval = null;
+              // The backend closed this session: never /close it again.
+              this._markSessionClosed();
+              this.midPlaybackGate?.remove();
+              this.midPlaybackGate = null;
+              await this._reopenSession(reopenModeFor('replay'));
             })
             .catch((approveErr) => {
               console.warn('[JubJub] USDC approval not completed', approveErr);
@@ -1410,6 +1442,9 @@ export class JubJub extends EventEmitter {
         this.emit('cost', cost);
         this.overlay?.update(cost);
       });
+      // Every segment's answer is read: a session the backend closed (the
+      // $2.00 cap, an unpaid tab, the idle sweep) is never metered again.
+      this.costTracker.on('segment', (e: SegmentEvent) => this._onSegmentOutcome(e));
       this.costTracker.start();
 
       // 7. Overlay
@@ -1444,7 +1479,9 @@ export class JubJub extends EventEmitter {
       let beaconSent = false;
       this.beforeUnloadHandler = () => {
         if (beaconSent) return;
-        if (this.session && this.costTracker) {
+        // A session already closed (ended, capped, beaconed) is not beaconed
+        // again; the backend would refuse.
+        if (this.session && this.costTracker && !this.sessionClosed) {
           beaconSent = true;
           this.session.beaconClose(this.costTracker.getPlaybackSeconds());
           this._markSessionClosed();
@@ -1455,15 +1492,26 @@ export class JubJub extends EventEmitter {
         if (shouldBeaconOnHidden(video)) this.beforeUnloadHandler?.();
       };
       this.resumeHandler = () => {
+        // Replay after the session was closed (ended, cap, beacon, idle, tab):
+        // open a new one from the pot before a frame plays. Wallet and page
+        // token are held, so this prompts only when the open answers 402.
         if (mustReopenOnPlay({ sessionClosed: this.sessionClosed, reopening: this.reopening })) {
-          void this._reopenSession();
+          void this._reopenSession(reopenModeFor('replay'));
         }
       };
+      // ENDED CLOSES THE SESSION (pot model rule 4, decision 9). The moment
+      // the content plays to its end the session is closed with the seconds
+      // played, charging stops and 'session:end' goes out. Before 2.2.0 the
+      // session was left open for the idle sweep. A replay reopens quietly
+      // through resumeHandler.
+      this.endedHandler = () => this._closeSessionNow('ended');
       window.addEventListener('beforeunload', this.beforeUnloadHandler);
       window.addEventListener('pagehide', this.beforeUnloadHandler);
       document.addEventListener('visibilitychange', this.visibilityHandler);
       video.addEventListener('play', this.resumeHandler);
+      video.addEventListener('ended', this.endedHandler);
       this.sessionClosed = false;
+      this.sessionEndEmitted = false;
 
       console.log('[JubJub] Ready — streaming payments active');
       this.emit('ready');
@@ -1475,10 +1523,10 @@ export class JubJub extends EventEmitter {
   }
 
   /**
-   * The beacon has closed this instance's session. Nothing may be sent
-   * against it again: no segment (the tracker stops) and no URL refresh (the
-   * refresher stops, which also drops its own replay handler so only
-   * _reopenSession answers the next `play`). The overlay keeps its final
+   * This instance's session is closed (beacon, ended, cap, backend). Nothing
+   * may be sent against it again: no segment (the tracker stops) and no URL
+   * refresh (the refresher stops, which also drops its own replay handler so
+   * only _reopenSession answers the next `play`). The overlay keeps its final
    * figure. The session object stays so disconnect() can report it.
    */
   private _markSessionClosed(): void {
@@ -1488,32 +1536,95 @@ export class JubJub extends EventEmitter {
     this.refresher = null;
   }
 
+  /** 'session:end' once per session; disconnect() and the ended close share it. */
+  private _emitSessionEnd(summary: SessionSummary): void {
+    if (this.sessionEndEmitted) return;
+    this.sessionEndEmitted = true;
+    this.emit('session:end', summary);
+  }
+
   /**
-   * Playback resumed after the session was closed: open a new session before
-   * a frame plays. FAIL CLOSED: the element is paused at once, the closed
-   * session's tracker, loop and handlers are torn down, attach() runs again
-   * (wallet and page token are held, so normally no prompt; the allowance is
-   * re-read, the backend re-checks funding and opens a fresh session), and
-   * playback resumes from where it was only when a session is open. A refusal
-   * is shown in the gate with the backend's words, and the retry runs this
-   * again.
+   * Close the session now, with the seconds played so far: the media's
+   * `ended` event (rule 4). Metering stops, POST /close goes out, and
+   * 'session:end' is emitted. The session object stays until disconnect()
+   * (which will not close it a second time) or the next replay's re-open.
    */
-  private async _reopenSession(): Promise<void> {
+  private _closeSessionNow(why: string): void {
+    const session = this.session;
+    if (!session || this.sessionClosed) return;
+    const seconds = this.costTracker?.getPlaybackSeconds() ?? 0;
+    const cost = this.costTracker?.getCost()?.usdc ?? 0;
+    console.log(`[JubJub] Closing session (${why}) after ${seconds.toFixed(1)}s played`);
+    this._markSessionClosed();
+    session.close(seconds).catch(() => {});
+    this._emitSessionEnd({
+      sessionId: session.id,
+      seconds,
+      cost,
+      walletAddress: this.wallet.getAddress() ?? '',
+    });
+  }
+
+  /**
+   * A segment POST answered. 'continue': nothing to do. Otherwise the backend
+   * closed the session (rules 2 and 3): stop metering it, mark it closed and
+   * never /close it. On the $2.00 cap ('rollover') open a new session quietly
+   * while the media keeps playing. Any other closure ('closed': an unpaid tab,
+   * the idle sweep) must not leave frames playing against nothing, so while
+   * the media is playing the re-open runs now, pausing first; paused or ended
+   * media simply waits for the next `play`.
+   */
+  private _onSegmentOutcome(e: SegmentEvent): void {
+    if (e.outcome === 'continue') return;
+    // A second segment in flight at the same moment: already handled.
+    if (this.sessionClosed) return;
+    const video = this.video;
+    const why = e.response?.end_reason ?? e.response?.status ?? 'closed';
+    console.log(`[JubJub] Backend closed the session (${why}); no more segments to it`);
+    this._markSessionClosed();
+    if (!video || !mustReopenNow(video)) return;
+    void this._reopenSession(reopenModeFor(e.outcome));
+  }
+
+  /**
+   * The session is closed and the viewer is watching (or wants to): open a
+   * new session from the pot. The closed session's tracker, loop and handlers
+   * are torn down (disconnect() never /closes a session already closed),
+   * attach() runs again (wallet and page token are held, so no prompt; the
+   * allowance is read against the floor, the backend re-checks funding and
+   * opens a fresh session), and playback carries on only when a session is
+   * open. A refusal is shown in the gate with the backend's words, and the
+   * retry runs this again.
+   *
+   * `mode.pauseWhileReopening` (sessionLifecycle.reopenModeFor):
+   *   true   a replay after a closed session: pause at once, then resume
+   *          from the same position once the new session is open.
+   *   false  the $2.00 cap rollover: keep the media playing while the new
+   *          session opens; pause and gate only if the open is refused.
+   */
+  private async _reopenSession(mode: ReopenMode = reopenModeFor('replay')): Promise<void> {
     const video = this.video;
     const contentId = this.attachedContentId;
     if (!video || !contentId || this.reopening) return;
     this.reopening = true;
-    try { video.pause(); } catch { /* ignore */ }
+    const wasPlaying = !video.paused && !video.ended;
+    if (mode.pauseWhileReopening) {
+      try { video.pause(); } catch { /* ignore */ }
+    }
     const resumeAt = video.currentTime || 0;
     const refused: { text: { title: string; sub?: string; action?: string } | null } = { text: null };
     const onRequired = (e: any) => {
       refused.text = { title: e?.message || 'Payment required', sub: e?.sub, action: e?.action };
     };
     this.on('payment:required', onRequired);
-    console.log('[JubJub] Session is closed; opening a new one before playback resumes');
+    console.log(
+      mode.pauseWhileReopening
+        ? '[JubJub] Session is closed; opening a new one before playback resumes'
+        : '[JubJub] Session is closed; opening a new one while playback continues',
+    );
     try {
-      // The old session was closed by the beacon, so disconnect() skips its
-      // close call and only tears down.
+      // The old session is already closed, so disconnect() skips its close
+      // call and only tears down.
       await this.disconnect().catch(() => undefined);
       await this.attach(contentId, video);
     } catch {
@@ -1528,11 +1639,27 @@ export class JubJub extends EventEmitter {
       this.reopening = false;
     }
     if (this.session) {
-      this._resumePlayback(video, resumeAt);
+      if (video.ended) {
+        // The content finished while the new session was opening: close it
+        // at once rather than leave it for the idle sweep.
+        this._closeSessionNow('ended during reopen');
+        return;
+      }
+      if (mode.pauseWhileReopening) {
+        this._resumePlayback(video, resumeAt);
+      } else if (this.contentInfo?.gated && wasPlaying) {
+        // Tier 2: attach() put a fresh signed URL on the element, which reset
+        // it. Put it back where it was and keep playing. Tier 1's source was
+        // never touched: it is still playing.
+        this._resumePlayback(video, resumeAt);
+      }
       return;
     }
-    // No session: the element stays paused under a gate. The flag stays set,
-    // so the native play button runs the same re-open as the gate's button.
+    // No session: the element is paused under a gate (the quiet path has not
+    // paused yet). The flag stays set, so the native play button runs the
+    // same re-open as the gate's button. Rule 8: blocked playback always
+    // shows a prompt with the backend's words and a retry.
+    try { video.pause(); } catch { /* ignore */ }
     this.sessionClosed = true;
     if (this.midPlaybackGate) return;
     this.midPlaybackGate = _createPaymentGate(
@@ -1540,7 +1667,7 @@ export class JubJub extends EventEmitter {
       () => {
         this.midPlaybackGate?.remove();
         this.midPlaybackGate = null;
-        void this._reopenSession();
+        void this._reopenSession(reopenModeFor('replay'));
       },
       refused.text?.title ?? 'Stream paused',
       refused.text?.sub ?? 'Your paid session ended. Press play to start a new one.',
@@ -1584,8 +1711,9 @@ export class JubJub extends EventEmitter {
     this.refresher = null;
     this.midPlaybackGate?.remove();
     this.midPlaybackGate = null;
-    // A session the beacon already closed is not closed twice: the backend
-    // would refuse, and the summary below is still reported to the host.
+    // A session already closed (by the beacon, by `ended`, or by the backend
+    // at the cap or for an unpaid tab) is not closed twice: the backend would
+    // refuse, and the summary below is still reported to the host.
     if (this.session && !this.sessionClosed) await this.session.close(playback);
     this.overlay?.remove();
     if (this.beforeUnloadHandler) {
@@ -1601,13 +1729,19 @@ export class JubJub extends EventEmitter {
       this.video?.removeEventListener('play', this.resumeHandler);
       this.resumeHandler = null;
     }
+    if (this.endedHandler) {
+      this.video?.removeEventListener('ended', this.endedHandler);
+      this.endedHandler = null;
+    }
     const summary: SessionSummary = {
       sessionId: this.session?.id ?? '',
       seconds: playback,
       cost,
       walletAddress: this.wallet.getAddress() ?? '',
     };
-    this.emit('session:end', summary);
+    // Once per session: the ended close may already have reported it.
+    this._emitSessionEnd(summary);
+    this.sessionEndEmitted = false;
     this.session = null;
     this.costTracker = null;
     this.overlay = null;

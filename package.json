@@ -1,6 +1,6 @@
 {
   "name": "@jubjub/sdk",
-  "version": "2.1.6",
+  "version": "2.2.0",
   "description": "Add pay-per-view streaming payments to any video. Two lines of code.",
   "main": "dist/jubjub-sdk.umd.js",
   "types": "dist/index.d.ts",
@@ -10,7 +10,9 @@
   "scripts": {
     "build": "vite build && tsc --emitDeclarationOnly --declaration --outDir dist",
     "dev": "vite",
-    "test": "tsc -p tsconfig.test.json && node --test \".test-build/test/**/*.test.js\""
+    "test": "tsc -p tsconfig.test.json && node --test \".test-build/test/**/*.test.js\"",
+    "release": "node scripts/release.mjs",
+    "check:release": "node scripts/check-release.mjs"
   },
   "dependencies": {
     "viem": "^2.0.0"

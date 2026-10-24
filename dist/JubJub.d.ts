@@ -20,15 +20,21 @@ export declare class JubJub extends EventEmitter {
     /** Tier-2 only: mid-playback fail-closed gate (single instance, no stacking). */
     private midPlaybackGate;
     /**
-     * Set once this instance's session has been closed by the beacon (tab
-     * hidden while paused or ended, pagehide, beforeunload). Playback must
-     * never continue against it: the next `play` opens a new session first
-     * (_reopenSession) and plays only once it is open. Cleared when attach()
-     * completes.
+     * Set once this instance's session has been closed: by the beacon (tab
+     * hidden while paused or ended, pagehide, beforeunload), by the media's
+     * `ended` event (the SDK closes it at once), or by the backend (a segment
+     * answered status "closed", a refresh answered 409 session_capped). Nothing
+     * is sent against it again and /close is never called on one the backend
+     * closed. The next `play` opens a new session first (_reopenSession) and
+     * plays only once it is open. Cleared when attach() completes.
      */
     private sessionClosed;
     /** Bound to the video's `play` alongside the beacon handlers; see attach(). */
     private resumeHandler;
+    /** Bound to the video's `ended`: closes the session the moment it ends. */
+    private endedHandler;
+    /** 'session:end' has gone out for the current session (once per session). */
+    private sessionEndEmitted;
     /** A re-open is in flight; a second `play` must not start another. */
     private reopening;
     constructor(options?: JubJubOptions);
@@ -158,22 +164,47 @@ export declare class JubJub extends EventEmitter {
     private _gateMidPlayback;
     attach(contentId: string, video: HTMLVideoElement): Promise<void>;
     /**
-     * The beacon has closed this instance's session. Nothing may be sent
-     * against it again: no segment (the tracker stops) and no URL refresh (the
-     * refresher stops, which also drops its own replay handler so only
-     * _reopenSession answers the next `play`). The overlay keeps its final
+     * This instance's session is closed (beacon, ended, cap, backend). Nothing
+     * may be sent against it again: no segment (the tracker stops) and no URL
+     * refresh (the refresher stops, which also drops its own replay handler so
+     * only _reopenSession answers the next `play`). The overlay keeps its final
      * figure. The session object stays so disconnect() can report it.
      */
     private _markSessionClosed;
+    /** 'session:end' once per session; disconnect() and the ended close share it. */
+    private _emitSessionEnd;
     /**
-     * Playback resumed after the session was closed: open a new session before
-     * a frame plays. FAIL CLOSED: the element is paused at once, the closed
-     * session's tracker, loop and handlers are torn down, attach() runs again
-     * (wallet and page token are held, so normally no prompt; the allowance is
-     * re-read, the backend re-checks funding and opens a fresh session), and
-     * playback resumes from where it was only when a session is open. A refusal
-     * is shown in the gate with the backend's words, and the retry runs this
-     * again.
+     * Close the session now, with the seconds played so far: the media's
+     * `ended` event (rule 4). Metering stops, POST /close goes out, and
+     * 'session:end' is emitted. The session object stays until disconnect()
+     * (which will not close it a second time) or the next replay's re-open.
+     */
+    private _closeSessionNow;
+    /**
+     * A segment POST answered. 'continue': nothing to do. Otherwise the backend
+     * closed the session (rules 2 and 3): stop metering it, mark it closed and
+     * never /close it. On the $2.00 cap ('rollover') open a new session quietly
+     * while the media keeps playing. Any other closure ('closed': an unpaid tab,
+     * the idle sweep) must not leave frames playing against nothing, so while
+     * the media is playing the re-open runs now, pausing first; paused or ended
+     * media simply waits for the next `play`.
+     */
+    private _onSegmentOutcome;
+    /**
+     * The session is closed and the viewer is watching (or wants to): open a
+     * new session from the pot. The closed session's tracker, loop and handlers
+     * are torn down (disconnect() never /closes a session already closed),
+     * attach() runs again (wallet and page token are held, so no prompt; the
+     * allowance is read against the floor, the backend re-checks funding and
+     * opens a fresh session), and playback carries on only when a session is
+     * open. A refusal is shown in the gate with the backend's words, and the
+     * retry runs this again.
+     *
+     * `mode.pauseWhileReopening` (sessionLifecycle.reopenModeFor):
+     *   true   a replay after a closed session: pause at once, then resume
+     *          from the same position once the new session is open.
+     *   false  the $2.00 cap rollover: keep the media playing while the new
+     *          session opens; pause and gate only if the open is refused.
      */
     private _reopenSession;
     /**
