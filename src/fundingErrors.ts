@@ -20,6 +20,13 @@
  * tab plus the floor. required_micro is that total, and it is exactly what
  * the approve button asks for.
  *
+ * Any OTHER 402 whose detail carries a reason or a message is still a funding
+ * refusal (402 is Payment Required; the backend authenticated the session
+ * token before it checked funds). It parses to reason 'unknown' with the
+ * backend's own words as the message, so a reason added to the backend after
+ * this bundle shipped is shown to the viewer as the backend said it, never as
+ * "Payment service unavailable", and never forgets the page token.
+ *
  * Pure and DOM-free so it is unit-tested directly (test/fundingErrors.test.ts).
  * Parsing NEVER throws: a missing or garbled body yields null and the caller
  * keeps its ordinary "failed: <status>" error.
@@ -34,7 +41,19 @@ export const DEFAULT_REQUIRED_MICRO = 500_000;
 export type FundingRequiredReason =
   | 'insufficient_allowance'
   | 'insufficient_balance'
-  | 'tab_unpaid';
+  | 'tab_unpaid'
+  /**
+   * Forward compatibility: a 402 whose reason this bundle does not know.
+   * The backend's reason string is kept in `backendReason` and its message
+   * is the error message; the gate shows those words. Never an approval.
+   */
+  | 'unknown';
+
+/**
+ * The longest backend message the gate will show verbatim. A longer one is
+ * cut so a server-side stack trace or HTML page cannot fill the gate.
+ */
+const MAX_BACKEND_MESSAGE_CHARS = 200;
 
 /** "$0.50" from 500000 micro USDC. */
 export function formatMicroUsdc(micro: number): string {
@@ -60,6 +79,16 @@ export function fundingMessage(
     return {
       title: "Couldn't check your USDC",
       sub: "We couldn't reach the network to verify your wallet. Please try again.",
+      action: 'Try again',
+    };
+  }
+  if (err.reason === 'unknown') {
+    // The backend's words, as sent. The SDK does not know this reason, so it
+    // does not guess at a fix: no approve button, just a retry.
+    const why = err.backendReason ? ` (${err.backendReason})` : '';
+    return {
+      title: err.backendMessage ?? 'Payment refused',
+      sub: `JubJub refused to start streaming${why}. Try again once this is resolved.`,
       action: 'Try again',
     };
   }
@@ -104,8 +133,13 @@ export function fundingMessage(
 
 /**
  * 402: the viewer cannot fund streaming. `spender` is the address the USDC
- * allowance must be granted to (the creator pool), NOT the payment router.
- * Amounts are micro-USDC; null when the backend did not send one.
+ * allowance must be granted to: the streaming spender the backend draws
+ * against. On the hub rail (POOL_STREAMING_SOURCE on, production since
+ * 2026-10) that is the creator pool; on the router rail it is the payment
+ * router. It is the SAME address playback-info serves as `payment_router`
+ * (backend sdk_routes._streaming_spender), so Step 4's approval and a 402's
+ * spender name one contract, never two. Amounts are micro-USDC; null when
+ * the backend did not send one.
  */
 export class FundingRequiredError extends Error {
   readonly name = 'FundingRequiredError';
@@ -122,10 +156,22 @@ export class FundingRequiredError extends Error {
   readonly owedMicro: number | null;
   /** tab_unpaid only: which fell short. 'balance' means approving cannot help. */
   readonly short: 'allowance' | 'balance' | null;
+  /**
+   * reason 'unknown' only: the backend's reason string as sent (null when the
+   * body carried a message but no reason). Known reasons keep this null.
+   */
+  readonly backendReason: string | null;
+  /**
+   * reason 'unknown' only: the backend's message as sent, trimmed and cut to
+   * MAX_BACKEND_MESSAGE_CHARS; null when the body carried none. This is what
+   * the gate shows as its title.
+   */
+  readonly backendMessage: string | null;
 
   constructor(fields: {
     reason: FundingRequiredReason;
     message?: string;
+    backendReason?: string | null;
     requiredMicro?: number | null;
     allowanceMicro?: number | null;
     balanceMicro?: number | null;
@@ -150,11 +196,24 @@ export class FundingRequiredError extends Error {
     this.chainId = fields.chainId ?? null;
     this.owedMicro = fields.owedMicro ?? null;
     this.short = fields.short ?? null;
+    if (fields.reason === 'unknown') {
+      this.backendReason =
+        typeof fields.backendReason === 'string' && fields.backendReason.trim()
+          ? fields.backendReason.trim().slice(0, MAX_BACKEND_MESSAGE_CHARS)
+          : null;
+      const said = typeof fields.message === 'string' ? fields.message.trim() : '';
+      this.backendMessage = said ? said.slice(0, MAX_BACKEND_MESSAGE_CHARS) : null;
+    } else {
+      this.backendReason = null;
+      this.backendMessage = null;
+    }
   }
 
   /**
    * True when the fix is an approval: insufficient_allowance, or a tab the
-   * allowance does not cover. tab_unpaid short on BALANCE is not one.
+   * allowance does not cover. tab_unpaid short on BALANCE is not one, and
+   * neither is a reason this bundle does not know ('unknown'): the SDK never
+   * asks a wallet to approve on a guess.
    */
   get needsApproval(): boolean {
     return (
@@ -202,7 +261,9 @@ function addr(v: unknown): string | null {
 
 /**
  * Turn a failed response into a typed funding error, or null when it is not
- * one (any other status, or a body that does not carry a known reason).
+ * one: any other status, a body with no `detail` object, or a 402 detail
+ * that carries neither a reason nor a message. A 402 detail with an unknown
+ * reason (or a message and no reason) is a FundingRequiredError('unknown').
  * Accepts the raw body text; never throws.
  */
 export function parseFundingError(
@@ -245,6 +306,26 @@ export function parseFundingError(
           ? detail.short
           : null,
     });
+  }
+  if (status === 402) {
+    // A reason this bundle predates, or a message with no reason at all. It
+    // is still a funding refusal: carry the backend's words and whatever
+    // amounts it sent, but never treat it as an approval to make.
+    const reasonText = typeof reason === 'string' && reason.trim() ? reason.trim() : null;
+    const messageText = typeof message === 'string' && message.trim() ? message.trim() : null;
+    if (reasonText || messageText) {
+      return new FundingRequiredError({
+        reason: 'unknown',
+        backendReason: reasonText,
+        message: messageText ?? undefined,
+        requiredMicro: num(detail.required_micro),
+        allowanceMicro: num(detail.allowance_micro),
+        balanceMicro: num(detail.balance_micro),
+        spender: addr(detail.spender),
+        token: addr(detail.token),
+        chainId: num(detail.chain_id),
+      });
+    }
   }
   return null;
 }

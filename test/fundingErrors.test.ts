@@ -81,8 +81,11 @@ test('missing, garbled or foreign bodies parse to null, never throw', () => {
     [402, '{"detail": null}'],
     [402, '[]'],
     [402, 'null'],
-    [402, '{"detail": {"reason": "something_new"}}'],
+    [402, '{"detail": {}}'],
+    [402, '{"detail": {"reason": "", "message": "   "}}'],
+    [402, '{"detail": {"reason": 42}}'],
     [503, '{"detail": {"reason": "insufficient_allowance"}}'],
+    [503, '{"detail": {"reason": "something_new", "message": "x"}}'],
     [503, 'Service Unavailable'],
     [500, body402('insufficient_allowance')],
   ];
@@ -322,4 +325,159 @@ test('the older reasons carry no tab fields', () => {
   assert.equal(e.needsApproval, true);
   const b = parseFundingError(402, body402('insufficient_balance')) as FundingRequiredError;
   assert.equal(b.needsApproval, false);
+});
+
+// ---------------------------------------------------------------------------
+// Forward compatibility (audit bug 18): a 402 reason this bundle predates is
+// still a funding refusal, shown in the backend's words, never an approval.
+// ---------------------------------------------------------------------------
+
+test('a 402 with an unknown reason parses to reason unknown carrying the backend words', () => {
+  const err = parseFundingError(
+    402,
+    JSON.stringify({
+      detail: {
+        reason: 'card_balance_low',
+        message: 'Your JubJub card is empty. Top it up to keep watching.',
+        required_micro: 250000,
+        balance_micro: 10000,
+        spender: SPENDER,
+        token: USDC,
+        chain_id: 8453,
+      },
+    }),
+  );
+  assert.ok(err instanceof FundingRequiredError);
+  const e = err as FundingRequiredError;
+  assert.equal(e.reason, 'unknown');
+  assert.equal(e.backendReason, 'card_balance_low');
+  assert.equal(e.backendMessage, 'Your JubJub card is empty. Top it up to keep watching.');
+  assert.equal(e.message, 'Your JubJub card is empty. Top it up to keep watching.');
+  assert.equal(e.status, 402);
+  assert.equal(e.retryable, false);
+  // Never an approval on a guess, whatever the body carries.
+  assert.equal(e.needsApproval, false);
+  // The amounts it did send are kept for hosts that know the reason.
+  assert.equal(e.requiredMicro, 250000);
+  assert.equal(e.balanceMicro, 10000);
+  assert.equal(e.spender, SPENDER);
+  assert.equal(e.chainId, 8453);
+  const m = fundingMessage(e);
+  assert.equal(m.title, 'Your JubJub card is empty. Top it up to keep watching.');
+  assert.equal(m.sub, 'JubJub refused to start streaming (card_balance_low). Try again once this is resolved.');
+  assert.equal(m.action, 'Try again');
+});
+
+test('a 402 with a message and no reason is also a funding refusal', () => {
+  const e = parseFundingError(
+    402,
+    JSON.stringify({ detail: { message: 'Streaming is paused for this creator.' } }),
+  ) as FundingRequiredError;
+  assert.ok(e instanceof FundingRequiredError);
+  assert.equal(e.reason, 'unknown');
+  assert.equal(e.backendReason, null);
+  assert.equal(e.backendMessage, 'Streaming is paused for this creator.');
+  assert.equal(e.requiredMicro, 500000);
+  const m = fundingMessage(e);
+  assert.equal(m.title, 'Streaming is paused for this creator.');
+  assert.equal(m.sub, 'JubJub refused to start streaming. Try again once this is resolved.');
+});
+
+test('a 402 with a reason and no message gets a generic title naming the reason', () => {
+  const e = parseFundingError(402, '{"detail": {"reason": "something_new"}}') as FundingRequiredError;
+  assert.ok(e instanceof FundingRequiredError);
+  assert.equal(e.reason, 'unknown');
+  assert.equal(e.backendReason, 'something_new');
+  assert.equal(e.backendMessage, null);
+  assert.equal(e.message, 'unknown');
+  const m = fundingMessage(e);
+  assert.equal(m.title, 'Payment refused');
+  assert.equal(m.sub, 'JubJub refused to start streaming (something_new). Try again once this is resolved.');
+  assert.equal(m.action, 'Try again');
+});
+
+test('an over-long backend message is cut before it reaches the gate', () => {
+  const long = 'x'.repeat(1000);
+  const e = parseFundingError(
+    402,
+    JSON.stringify({ detail: { reason: 'r'.repeat(500), message: long } }),
+  ) as FundingRequiredError;
+  assert.equal(e.backendMessage!.length, 200);
+  assert.equal(e.backendReason!.length, 200);
+  assert.equal(fundingMessage(e).title.length, 200);
+});
+
+test('the known reasons carry no backend fields and their copy is unchanged', () => {
+  const a = parseFundingError(402, body402('insufficient_allowance')) as FundingRequiredError;
+  assert.equal(a.backendReason, null);
+  assert.equal(a.backendMessage, null);
+  assert.equal(fundingMessage(a).title, 'Approve at least $0.50 USDC for JubJub streaming');
+  const t = parseFundingError(402, bodyTab('allowance')) as FundingRequiredError;
+  assert.equal(t.backendReason, null);
+  assert.equal(fundingMessage(t).action, 'Approve $1.70');
+});
+
+test('createStreamingSession throws FundingRequiredError(unknown) on a new 402 reason', async () => {
+  const restore = stubFetch(
+    402,
+    JSON.stringify({ detail: { reason: 'brand_new', message: 'The backend said so.' } }),
+  );
+  try {
+    const api = new ApiClient('https://api.example');
+    await assert.rejects(api.createStreamingSession('c1', SPENDER), (err: unknown) => {
+      assert.ok(err instanceof FundingRequiredError);
+      assert.equal((err as FundingRequiredError).reason, 'unknown');
+      assert.equal((err as FundingRequiredError).message, 'The backend said so.');
+      return true;
+    });
+  } finally {
+    restore();
+  }
+});
+
+test('getSessionPlaybackUrl throws FundingRequiredError(unknown) on a new 402 reason', async () => {
+  const restore = stubFetch(402, JSON.stringify({ detail: { reason: 'brand_new', message: 'Said so.' } }));
+  try {
+    const api = new ApiClient('https://api.example');
+    await assert.rejects(api.getSessionPlaybackUrl('s1'), (err: unknown) => {
+      assert.ok(err instanceof FundingRequiredError);
+      assert.equal((err as FundingRequiredError).reason, 'unknown');
+      return true;
+    });
+  } finally {
+    restore();
+  }
+});
+
+test('the refresher treats an unknown 402 reason like any other: paused, reported once, no loop', async () => {
+  const video = fakeVideo();
+  let calls = 0;
+  const api = {
+    getSessionPlaybackUrl: async () => {
+      calls += 1;
+      throw parseFundingError(
+        402,
+        JSON.stringify({ detail: { reason: 'brand_new', message: 'Said so.' } }),
+      );
+    },
+  };
+  const failures: unknown[] = [];
+  const refresher = new PlaybackUrlRefresher(video as any, api as any, 's1', {
+    onFailure: (err) => failures.push(err),
+  });
+  refresher.start(video.src, 120);
+  try {
+    assert.equal(await refresher.refreshNow('ttl'), false);
+    assert.equal(video.pauses, 1);
+    assert.equal(failures.length, 1);
+    assert.equal((failures[0] as FundingRequiredError).reason, 'unknown');
+    video.fire('error');
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(await refresher.refreshNow('ttl'), false);
+    assert.equal(calls, 1);
+    assert.equal(await refresher.refreshNow('manual'), false);
+    assert.equal(calls, 2);
+  } finally {
+    refresher.stop();
+  }
 });
