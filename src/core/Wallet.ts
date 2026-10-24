@@ -32,19 +32,14 @@ export class Wallet {
       }
     }
 
-    // No BYO wallet — try Privy
-    try {
-      const privy = await import('@privy-io/js-sdk-core');
-      // @privy-io/js-sdk-core provides a headless SDK.
-      // For the MVP the UMD build will fail this import gracefully
-      // and require a BYO wallet. Full Privy integration is Sprint 2.
-      throw new Error('Privy headless SDK integration is not yet implemented');
-    } catch {
-      throw new Error(
-        'No wallet provided. Pass a wallet client via options.wallet, ' +
-          'or install @privy-io/js-sdk-core for built-in wallet connect.',
-      );
-    }
+    // No BYO wallet and no built-in connector. The dynamic Privy import that
+    // used to sit here was unreachable (JubJub._ensureWallet throws no-wallet
+    // first) and could never resolve from a UMD bundle in a browser; it only
+    // put the package name into dist. The error message is unchanged.
+    throw new Error(
+      'No wallet provided. Pass a wallet client via options.wallet, ' +
+        'or install @privy-io/js-sdk-core for built-in wallet connect.',
+    );
   }
 
   getAddress(): string | null {

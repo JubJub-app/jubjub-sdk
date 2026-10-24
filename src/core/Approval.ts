@@ -34,6 +34,21 @@ const MAX_SESSION_MINUTES = 120;
 // Floor so cheap content still bounds to enough for a complete session. The
 // backend caps a single session at $2 (MAX_SESSION_AMOUNT), so $2 is always
 // sufficient for one session regardless of price-per-minute.
+//
+// THREE NUMBERS, THREE SURFACES (recorded 2026-10-24, audit bug 14; none of
+// them changed here because the reuse threshold is allowance policy):
+//   - This SDK re-approves when allowance(viewer, spender) < sessionBound,
+//     and sessionBound = max($2, price x 120 min); at the live $0.005/min
+//     that is $2.00. The amount approved is the standing allowance ($10).
+//   - The backend opens a session when allowance AND balance >= $0.50 plus
+//     any unpaid tab (session_funding.py FUNDING_FLOOR_MICRO), and answers
+//     402 otherwise. It is the authority on whether a session may open.
+//   - The dashboard's /watch gate approves a standing $1.00 and re-prompts
+//     below min(cost of a full session, $2) (streamingApprovalAmount.ts).
+// So a viewer who approved $1 on the studio arrives here with $1 >= $0.50
+// (the backend would open) but $1 < $2, and this pre-flight asks for a fresh
+// approval the backend never required. Aligning the three is a decision for
+// the owner, not a bug fix: see the audit report.
 const MIN_APPROVAL_USDC = 2;
 const APPROVAL_FLOOR = BigInt(MIN_APPROVAL_USDC) * 10n ** BigInt(USDC_DECIMALS);
 
@@ -59,7 +74,13 @@ const MAX_STREAMING_ALLOWANCE =
 export class Approval {
   private wallet: Wallet;
   private usdc: Address;
-  private router: Address;
+  // The streaming spender: the address the viewer's USDC allowance is
+  // granted to and read against. It is playback-info's `payment_router`
+  // field, which the backend fills from sdk_routes._streaming_spender(): the
+  // creator pool on the hub rail (POOL_STREAMING_SOURCE on, production), the
+  // payment router on the router rail. The same helper feeds the backend's
+  // 402 `spender`, so Step 4 and a 402 always name one contract.
+  private spender: Address;
   private chain: SdkChain;
   // The amount approved when an approve is needed (standing allowance).
   private standingAllowance: bigint;
@@ -82,7 +103,7 @@ export class Approval {
   ) {
     this.wallet = wallet;
     this.usdc = chainConfig.usdc_address as Address;
-    this.router = chainConfig.payment_router as Address;
+    this.spender = chainConfig.payment_router as Address;
     this.sessionBound = Approval._boundedSessionAmount(
       chainConfig.price_per_minute_usdc,
     );
@@ -215,7 +236,7 @@ export class Approval {
       address: this.usdc,
       abi: ERC20_ABI,
       functionName: 'allowance',
-      args: [owner as Address, this.router],
+      args: [owner as Address, this.spender],
     });
     // DECOUPLED THRESHOLD — the heart of the standing-allowance model.
     // Gate on whether the CURRENT allowance can cover the NEXT session's bound,
@@ -241,7 +262,7 @@ export class Approval {
       address: this.usdc,
       abi: ERC20_ABI,
       functionName: 'approve',
-      args: [this.router, this.standingAllowance],
+      args: [this.spender, this.standingAllowance],
     });
 
     await this.publicClient.waitForTransactionReceipt({ hash });
@@ -250,8 +271,9 @@ export class Approval {
   /**
    * Make sure `spender` may pull at least `requiredMicro` USDC from the viewer.
    * Used when the backend answers a session create or URL refresh with 402
-   * insufficient_allowance: the spender comes from THAT response (the creator
-   * pool the backend actually draws against), never a hard-coded address.
+   * insufficient_allowance: the spender comes from THAT response (the
+   * streaming spender the backend actually draws against, the same address
+   * playback-info serves as `payment_router`), never a hard-coded address.
    *
    * Same bounded standing amount as approve() — the larger of the standing
    * allowance and `requiredMicro`, and never above the ceiling. Returns true

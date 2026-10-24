@@ -28,6 +28,13 @@ export interface JubJubInitConfig {
    */
   streamingAllowanceUsd?: number;
   /**
+   * Show the streaming cost / "Powered by JubJub" overlay on every
+   * auto-discovered video. Defaults to true. Captured by init() and threaded
+   * to every video via play(); a per-video JubJubOptions.showCostOverlay
+   * wins over it. Honoured since 2.1.x; typed here from 2.1.6.
+   */
+  showCostOverlay?: boolean;
+  /**
    * Corner for the streaming cost / "Powered by JubJub" overlay. Defaults to
    * 'bottom-right'. Captured by init() and threaded to every auto-discovered
    * video via play() (mirrors showCostOverlay), so page-level init() can
@@ -76,9 +83,11 @@ export interface JubJubOptions {
   onWalletConnected?: (address: string) => void;
   /**
    * The backend refused to open (or keep refreshing) a session because the
-   * viewer's USDC allowance or balance is below the minimum (HTTP 402).
-   * Same payload as the 'funding:required' event. The built-in gate is shown
-   * regardless; a host rendering its own UI can use fundingMessage(err).
+   * viewer's USDC allowance or balance is below the minimum, an unpaid tab is
+   * owed, or for a reason this bundle predates (HTTP 402, reason 'unknown',
+   * the backend's message carried). Same payload as the 'funding:required'
+   * event. The built-in gate is shown regardless; a host rendering its own UI
+   * can use fundingMessage(err).
    */
   onFundingRequired?: (error: FundingRequiredError) => void;
   /** Per-instance override of the page-level token — see JubJubInitConfig.sessionToken. */
