@@ -172,11 +172,11 @@ If your app already has a wallet connection, pass it directly:
 
 ```js
 import { createWalletClient, custom } from 'viem';
-import { baseSepolia } from 'viem/chains';
+import { base } from 'viem/chains'; // Base mainnet; use baseSepolia with network: 'testnet'
 
 const walletClient = createWalletClient({
   account: userAddress,
-  chain: baseSepolia,
+  chain: base,
   transport: custom(window.ethereum),
 });
 

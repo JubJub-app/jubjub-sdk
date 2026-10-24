@@ -98,9 +98,12 @@ Revenue streams across JubJub:
 | Stream | Creator share | JubJub share |
 |---|---|---|
 | Streaming payments | 97% | 3% |
-| Secondary market | 96% seller / 2.5% creator royalty | 1.5% |
 | Metadata search | 0% | 100% |
 | Data feeds | 10% | 90% |
+
+There is no secondary market. Brand token units are transferable on chain
+(see "On-chain token architecture" below), but JubJub offers no marketplace or
+trading for them and takes no fee on a transfer.
 
 ---
 
@@ -171,16 +174,15 @@ Required: `media_url` and at least one of `creator_email` or `creator_wallet`.
   "price_per_minute_usdc": 0.005,
   "content_contract": "0x...",
   "payment_router": "0x...",
-  "usdc_address": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-  "chain_id": 84532,
-  "chain_name": "base-sepolia"
+  "usdc_address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+  "chain_id": 8453,
+  "chain_name": "base"
 }
 ```
 
-> The `chain_id` / `chain_name` / addresses above are a **testnet**
-> example. On mainnet content the backend returns `chain_id: 8453`
-> (`base`) with the corresponding Base mainnet addresses. The SDK
-> resolves its RPC from this `chain_id`.
+> Production is Base mainnet, so this is what live content returns. The
+> SDK resolves its RPC from `chain_id`; content on the Base Sepolia testnet
+> would return `chain_id: 84532` (`base-sepolia`) with its own addresses.
 >
 > `payment_router` carries the **streaming spender**: the address the
 > viewer's USDC allowance is granted to and that the backend draws against
@@ -222,9 +224,13 @@ This prevents multiple ownership claims on the same media.
 Three layers, each an ERC-1155 on Base:
 
 ```
-Brand Token (10,000 supply per catalogue)
-  Tradeable. Represents proportional ownership of ALL content revenue.
+Brand Token (ERC-1155 token id 1, 10,000 units per catalogue)
+  Represents proportional ownership of ALL content revenue.
   Example: Creator A 7,000 / Creator B 3,000
+  Units are transferable on chain like any ERC-1155. JubJub offers no
+  marketplace or trading, and JubJub's records (the splits and holders
+  its dashboard shows) do not follow a transfer. On chain, revenue
+  that arrives after a transfer is claimable by the new holder.
      |
      v
 Catalogue Contract (one per team or solo creator)
@@ -250,20 +256,20 @@ Viewer USDC
           -> brand token holders withdraw proportionally
 ```
 
-### Smart contracts (Base Sepolia testnet)
+### Smart contracts (Base mainnet)
 
-These are the **testnet** addresses. The SDK never hardcodes them — the
-backend playback-info response supplies `payment_router`, `usdc_address`,
-and `chain_id` per content, so on `network: 'mainnet'` (chain `8453`) the
-SDK uses the corresponding Base mainnet addresses returned by the backend.
+Production runs on Base mainnet (chain `8453`). The SDK does not hardcode
+these addresses: the backend playback-info response supplies
+`payment_router`, `usdc_address` and `chain_id` per content.
 
-| Contract | Address (Base Sepolia testnet) |
+| Contract | Address (Base mainnet) |
 |---|---|
-| JubJubPaymentRouter | `0xf5207b827f90b15da403c45A339BDC4a87BC258E` |
-| USDC | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` |
-| MediaOwnershipFactoryV2 | `0xFEDbA948C55Ff7D68228F05F080E70AfEa48aEEF` |
-| JubJubCatalogueFactory | `0x33Fb47f1d1DaDB3c0098F7A9D66c189701DAa95F` |
-| JubJubPublishLedger | `0x39c3dB9070FDbb9ED9e144782260b4802503b444` |
+| JubJubCreatorPool (the streaming spender on the current rail) | `0xD3b220ebd563d2309977f0442dD4746d4bAe3dC8` |
+| JubJubPaymentRouter | `0x8dcD41b8FaC4dD6dE3FD2e5A32962B3d93DbC9Da` |
+| MediaOwnershipFactoryV2 | `0xab217aa8428c24Dde73cf334aF650a290E52d81C` |
+| JubJubCatalogueFactory | `0xc5B533F9d2977d7e7Dc47dBE780BFA367E131e1B` |
+| JubJubPublishLedger | `0x3EC31c79a0b73FfA49f1868F5Ec6bd54D1588Aa6` |
+| USDC | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` |
 
 ---
 
@@ -573,7 +579,7 @@ initialised with `network: 'testnet'`.
 **Pending:**
 - Privy zero-config wallet (no browser extension needed)
 - npm publish (`@jubjub/sdk`)
-- Secondary market for brand tokens
+- A marketplace for brand token units. None exists today: units are transferable on chain, JubJub offers no trading, and JubJub's records do not follow a transfer
 - Dynamic pricing per content
 
 ---
