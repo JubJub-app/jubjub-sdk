@@ -1,6 +1,6 @@
-import type { ContentInfo, SearchParams, SearchResponse } from '../types';
+import type { ContentInfo, SearchParams, SearchResponse, SegmentResponse } from '../types';
 import { parseFundingError } from '../fundingErrors';
-import { parseContentNotPlayable } from '../streamingErrors';
+import { parseContentNotPlayable, parseSessionCapped } from '../streamingErrors';
 import { publicProfileFrom, redactEmails, stripInternalIdentity } from '../privacy';
 
 /**
@@ -307,9 +307,13 @@ export class ApiClient {
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       // Same 402/503 shapes as session create: the viewer's allowance or
-      // balance can drop below the minimum mid-session.
+      // balance can drop below the minimum mid-session. A 409 session_capped
+      // means this session did its $2.00 and a new one must be opened (the
+      // SDK rolls over quietly); it is typed so it is never gated as an
+      // outage.
       throw (
         parseFundingError(res.status, text) ??
+        parseSessionCapped(res.status, text) ??
         new Error(`Playback URL failed: ${res.status} ${text}`)
       );
     }
@@ -321,14 +325,27 @@ export class ApiClient {
     };
   }
 
-  async recordSegment(sessionId: string): Promise<void> {
+  /**
+   * Record one six-second segment against a session and return what the
+   * backend said about it (SegmentResponse). Before 2.2.0 the body was not
+   * read; now `status` and `end_reason` decide whether metering continues
+   * (sessionLifecycle.segmentOutcome): a session that reached its $2.00 cap
+   * answers 200 with status "closed" and end_reason "cap_reached", and the
+   * SDK rolls over to a new one. Returns null when the call failed or the
+   * body could not be read; the caller keeps metering and the next segment
+   * settles it.
+   */
+  async recordSegment(sessionId: string): Promise<SegmentResponse | null> {
     const res = await fetch(
       `${this.apiUrl}/v2/streaming/sessions/${sessionId}/segment`,
       { method: 'POST', headers: this.authHeaders() },
     );
     if (!res.ok) {
       console.error('[JubJub] segment failed:', res.status);
+      return null;
     }
+    const data = await res.json().catch(() => null);
+    return toSegmentResponse(sessionId, data);
   }
 
   async closeSession(
@@ -373,6 +390,22 @@ export class ApiClient {
       blob,
     );
   }
+}
+
+/**
+ * A segment body as the SDK reads it. Missing fields take their neutral
+ * value: no status reads as "active" (an older backend accepted the segment
+ * with 200 and said nothing more), no end_reason is null. Never throws.
+ */
+export function toSegmentResponse(sessionId: string, raw: unknown): SegmentResponse {
+  const r = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  return {
+    session_id: typeof r.session_id === 'string' ? r.session_id : sessionId,
+    segment_count: Number(r.segment_count) || 0,
+    amount_settled: Number(r.amount_settled) || 0,
+    status: typeof r.status === 'string' ? r.status : 'active',
+    end_reason: typeof r.end_reason === 'string' ? r.end_reason : null,
+  };
 }
 
 /**

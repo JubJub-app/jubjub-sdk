@@ -111,3 +111,57 @@ export function contentNotPlayableMessage(
     action: 'Try again',
   };
 }
+
+// --- The per-session cap on a gated URL refresh (2.2.0) -----------------------
+
+/**
+ * POST /v2/streaming/sessions/{id}/playback-url answers 409 for a session the
+ * backend ended because it reached its per-session cap:
+ *
+ *   409 {"detail": {"reason": "session_capped", "code": "session_capped",
+ *                   "message": "This session reached its per-session limit.
+ *                               Start a new one to keep watching."}}
+ *
+ * It is not a refusal of the viewer or the content: the pot still covers
+ * viewing, this session has simply done its $2.00. The SDK answers it the way
+ * it answers a segment response with end_reason "cap_reached" (Tier 2 of the
+ * same rule): mark the session closed, open a new one quietly, keep playing,
+ * and prompt only if the open answers 402.
+ */
+export class SessionCappedError extends Error {
+  readonly name = 'SessionCappedError';
+  readonly status = 409;
+  readonly reason = 'session_capped' as const;
+  readonly detail: string;
+
+  constructor(detail?: string) {
+    super(detail || 'session_capped');
+    Object.setPrototypeOf(this, SessionCappedError.prototype);
+    this.detail = detail || '';
+  }
+}
+
+export function isSessionCappedError(err: unknown): err is SessionCappedError {
+  return err instanceof SessionCappedError;
+}
+
+/**
+ * Turn a failed playback-url response into a SessionCappedError, or null when
+ * it is not one (any other status, or a 409 whose detail does not carry the
+ * session_capped reason or code). Never throws.
+ */
+export function parseSessionCapped(
+  status: number,
+  bodyText: string | null | undefined,
+): SessionCappedError | null {
+  if (status !== 409) return null;
+  try {
+    const body = bodyText ? JSON.parse(bodyText) : null;
+    const d = body && typeof body === 'object' ? (body as any).detail : null;
+    if (!d || typeof d !== 'object') return null;
+    if (d.reason !== 'session_capped' && d.code !== 'session_capped') return null;
+    return new SessionCappedError(typeof d.message === 'string' ? d.message : undefined);
+  } catch {
+    return null;
+  }
+}

@@ -38,8 +38,27 @@ export {
   isContentNotPlayableError,
   parseContentNotPlayable,
   contentNotPlayableMessage,
+  SessionCappedError,
+  isSessionCappedError,
+  parseSessionCapped,
 } from './streamingErrors';
 export type { ContentNotPlayableReason } from './streamingErrors';
+export {
+  shouldBeaconOnHidden,
+  mustReopenOnPlay,
+  mustReopenNow,
+  segmentOutcome,
+  reopenModeFor,
+  CAP_REACHED,
+} from './sessionLifecycle';
+export type { SegmentOutcome, ReopenMode, MediaPlayState } from './sessionLifecycle';
+export {
+  PREFLIGHT_FLOOR_MICRO,
+  DEFAULT_STREAMING_ALLOWANCE_USD,
+  MAX_STREAMING_ALLOWANCE_USD,
+  needsPreflightApproval,
+  standingAllowanceMicro,
+} from './allowancePolicy';
 export {
   announcedProviders,
   candidateProviders,
@@ -60,6 +79,7 @@ export type {
   ContentRegistration,
   ContentInfo,
   SessionSummary,
+  SegmentResponse,
   CostInfo,
   WalletLike,
   SearchParams,

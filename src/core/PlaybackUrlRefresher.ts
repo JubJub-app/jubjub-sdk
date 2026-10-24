@@ -1,5 +1,6 @@
 import type { ApiClient } from '../api/ApiClient';
 import { isFundingRequiredError } from '../fundingErrors';
+import { isSessionCappedError } from '../streamingErrors';
 
 /**
  * Fraction of the TTL at which we proactively re-resolve. 0.8 means a 120s URL
@@ -163,6 +164,18 @@ export class PlaybackUrlRefresher {
     } catch (err) {
       // FAIL CLOSED. Pause immediately so no protected frames keep playing on
       // a dead URL, then let the SDK gate. Never revert to a durable URL.
+      //
+      // One exception: 409 session_capped. The session did its $2.00 and the
+      // pot still covers viewing, so the SDK rolls over to a new session
+      // quietly and keeps the media playing (the URL on the element is good
+      // until its own expiry). This loop is finished either way: stop it
+      // here so no timer, media error or play re-resolves against the capped
+      // session; onFailure hands the roll-over to the SDK.
+      if (isSessionCappedError(err)) {
+        this.stop();
+        this.cb.onFailure(err);
+        return false;
+      }
       try {
         this.video.pause();
       } catch {

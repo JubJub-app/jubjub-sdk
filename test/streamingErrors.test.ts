@@ -2,9 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ContentNotPlayableError,
+  SessionCappedError,
   contentNotPlayableMessage,
   isContentNotPlayableError,
+  isSessionCappedError,
   parseContentNotPlayable,
+  parseSessionCapped,
 } from '../src/streamingErrors';
 
 /** The backend's 409 for cnt_7008a13a106c before its contract exists (streaming_session_manager.py). */
@@ -73,4 +76,36 @@ test('a non-JSON 409 body is read as plain text and never throws', () => {
   assert.equal(err?.reason, 'not_minted');
   const nested = parseContentNotPlayable(409, JSON.stringify({ detail: { message: 'JubJub only meters media published on-chain against a live contract' } }));
   assert.equal(nested?.reason, 'not_minted');
+});
+
+// The pot model (Tom, 2026-10-24), rule 3: a URL refresh for a session that
+// reached its $2.00 cap answers 409 session_capped; the SDK rolls over
+// quietly, it does not gate.
+
+const CAPPED = JSON.stringify({
+  detail: {
+    reason: 'session_capped',
+    code: 'session_capped',
+    message: 'This session reached its per-session limit. Start a new one to keep watching.',
+  },
+});
+
+test('a 409 session_capped on playback-url is typed, with the backend message', () => {
+  const err = parseSessionCapped(409, CAPPED);
+  assert.ok(err instanceof SessionCappedError);
+  assert.equal(isSessionCappedError(err), true);
+  assert.equal(err!.reason, 'session_capped');
+  assert.equal(err!.status, 409);
+  assert.match(err!.message, /per-session limit/);
+  // The code alone is enough.
+  assert.ok(isSessionCappedError(parseSessionCapped(409, JSON.stringify({ detail: { code: 'session_capped' } }))));
+});
+
+test('session_capped is not a content refusal, and other 409s are not a cap', () => {
+  assert.equal(isSessionCappedError(parseContentNotPlayable(409, CAPPED)), false);
+  assert.equal(parseSessionCapped(409, JSON.stringify({ detail: { reason: 'ownership_pending' } })), null);
+  assert.equal(parseSessionCapped(402, CAPPED), null);
+  assert.equal(parseSessionCapped(409, 'not json'), null);
+  assert.equal(parseSessionCapped(409, ''), null);
+  assert.equal(parseSessionCapped(409, null), null);
 });
