@@ -15,6 +15,7 @@ import {
 } from './walletProviders';
 import { contentNotPlayableMessage, isContentNotPlayableError } from './streamingErrors';
 import { chainForNetwork, type NetworkFlag } from './chains';
+import { mustReopenOnPlay, shouldBeaconOnHidden } from './sessionLifecycle';
 import {
   chainIdMatches,
   chainMismatchError,
@@ -313,6 +314,18 @@ export class JubJub extends EventEmitter {
   private attachedContentId: string | null = null;
   /** Tier-2 only: mid-playback fail-closed gate (single instance, no stacking). */
   private midPlaybackGate: { remove: () => void } | null = null;
+  /**
+   * Set once this instance's session has been closed by the beacon (tab
+   * hidden while paused or ended, pagehide, beforeunload). Playback must
+   * never continue against it: the next `play` opens a new session first
+   * (_reopenSession) and plays only once it is open. Cleared when attach()
+   * completes.
+   */
+  private sessionClosed = false;
+  /** Bound to the video's `play` alongside the beacon handlers; see attach(). */
+  private resumeHandler: (() => void) | null = null;
+  /** A re-open is in flight; a second `play` must not start another. */
+  private reopening = false;
 
   constructor(options: JubJubOptions = {}) {
     super();
@@ -371,8 +384,8 @@ export class JubJub extends EventEmitter {
     if (typeof config.streamingAllowanceUsd === 'number') {
       _initStreamingAllowanceUsd = config.streamingAllowanceUsd;
     }
-    if (typeof (config as any).showCostOverlay === 'boolean') {
-      _initShowOverlay = (config as any).showCostOverlay;
+    if (typeof config.showCostOverlay === 'boolean') {
+      _initShowOverlay = config.showCostOverlay;
     }
     if (config.overlayPosition) {
       _initOverlayPosition = config.overlayPosition;
@@ -1030,6 +1043,9 @@ export class JubJub extends EventEmitter {
       '[JubJub] Gated stream could not be refreshed — paused (fail closed).',
       cause instanceof Error ? cause.message : cause,
     );
+    // A 402 of any reason is a funding refusal, including one this bundle
+    // does not know (reason 'unknown'): the gate shows the backend's words,
+    // offers no approval, and the retry asks for a URL once.
     const funding =
       isFundingRequiredError(cause) || isFundingUnverifiableError(cause) ? cause : null;
     if (funding) this._announceFunding(funding);
@@ -1330,7 +1346,12 @@ export class JubJub extends EventEmitter {
         // A page-shared token that the backend refused (expired 24h TTL,
         // revoked) must not be reused by the next play: forget it so the
         // retry proves the wallet afresh instead of failing the same way.
-        _sessionToken = null;
+        // EXCEPT a 402: that is a funding refusal, never an auth failure (the
+        // backend authenticated the token before it checked funds), so the
+        // token stays even when the body could not be read as a funding error.
+        if (!(streamErr instanceof ApiHttpError && streamErr.status === 402)) {
+          _sessionToken = null;
+        }
         this._gatePayment(
           'Payment service unavailable',
           "Couldn't start the streaming payment. Please try again.",
@@ -1409,21 +1430,40 @@ export class JubJub extends EventEmitter {
       // full ten-minute idle timeout holding live pull authority.
       // `pagehide` is the reliable unload event in those environments;
       // `visibilitychange` catches a backgrounded tab that is never formally
-      // unloaded. Guarded so the overlapping events send at most one beacon.
+      // unloaded, but ONLY while the media is paused or ended
+      // (sessionLifecycle.shouldBeaconOnHidden): a hidden tab with audio still
+      // playing is a viewer still watching, and closing there left Tier 1
+      // posting segments to a closed session (free play) and Tier 2 gated on
+      // return. Guarded so the overlapping events send at most one beacon.
+      //
+      // Whatever closed the session, playback never continues against it. The
+      // beacon marks the session closed and stops the tracker and the URL
+      // refresher (both would be refused by the backend); the next `play`
+      // opens a new session first and resumes only once it is open
+      // (_reopenSession), the way the dashboard's PaymentGate replays.
       let beaconSent = false;
       this.beforeUnloadHandler = () => {
         if (beaconSent) return;
         if (this.session && this.costTracker) {
           beaconSent = true;
           this.session.beaconClose(this.costTracker.getPlaybackSeconds());
+          this._markSessionClosed();
         }
       };
       this.visibilityHandler = () => {
-        if (document.visibilityState === 'hidden') this.beforeUnloadHandler?.();
+        if (document.visibilityState !== 'hidden') return;
+        if (shouldBeaconOnHidden(video)) this.beforeUnloadHandler?.();
+      };
+      this.resumeHandler = () => {
+        if (mustReopenOnPlay({ sessionClosed: this.sessionClosed, reopening: this.reopening })) {
+          void this._reopenSession();
+        }
       };
       window.addEventListener('beforeunload', this.beforeUnloadHandler);
       window.addEventListener('pagehide', this.beforeUnloadHandler);
       document.addEventListener('visibilitychange', this.visibilityHandler);
+      video.addEventListener('play', this.resumeHandler);
+      this.sessionClosed = false;
 
       console.log('[JubJub] Ready — streaming payments active');
       this.emit('ready');
@@ -1432,6 +1472,106 @@ export class JubJub extends EventEmitter {
       this.emit('error', error);
       throw error;
     }
+  }
+
+  /**
+   * The beacon has closed this instance's session. Nothing may be sent
+   * against it again: no segment (the tracker stops) and no URL refresh (the
+   * refresher stops, which also drops its own replay handler so only
+   * _reopenSession answers the next `play`). The overlay keeps its final
+   * figure. The session object stays so disconnect() can report it.
+   */
+  private _markSessionClosed(): void {
+    this.sessionClosed = true;
+    this.costTracker?.stop();
+    this.refresher?.stop();
+    this.refresher = null;
+  }
+
+  /**
+   * Playback resumed after the session was closed: open a new session before
+   * a frame plays. FAIL CLOSED: the element is paused at once, the closed
+   * session's tracker, loop and handlers are torn down, attach() runs again
+   * (wallet and page token are held, so normally no prompt; the allowance is
+   * re-read, the backend re-checks funding and opens a fresh session), and
+   * playback resumes from where it was only when a session is open. A refusal
+   * is shown in the gate with the backend's words, and the retry runs this
+   * again.
+   */
+  private async _reopenSession(): Promise<void> {
+    const video = this.video;
+    const contentId = this.attachedContentId;
+    if (!video || !contentId || this.reopening) return;
+    this.reopening = true;
+    try { video.pause(); } catch { /* ignore */ }
+    const resumeAt = video.currentTime || 0;
+    const refused: { text: { title: string; sub?: string; action?: string } | null } = { text: null };
+    const onRequired = (e: any) => {
+      refused.text = { title: e?.message || 'Payment required', sub: e?.sub, action: e?.action };
+    };
+    this.on('payment:required', onRequired);
+    console.log('[JubJub] Session is closed; opening a new one before playback resumes');
+    try {
+      // The old session was closed by the beacon, so disconnect() skips its
+      // close call and only tears down.
+      await this.disconnect().catch(() => undefined);
+      await this.attach(contentId, video);
+    } catch {
+      if (!refused.text) {
+        refused.text = {
+          title: 'Payment service unavailable',
+          sub: "Couldn't start a new streaming session. Please try again.",
+        };
+      }
+    } finally {
+      this.off('payment:required', onRequired);
+      this.reopening = false;
+    }
+    if (this.session) {
+      this._resumePlayback(video, resumeAt);
+      return;
+    }
+    // No session: the element stays paused under a gate. The flag stays set,
+    // so the native play button runs the same re-open as the gate's button.
+    this.sessionClosed = true;
+    if (this.midPlaybackGate) return;
+    this.midPlaybackGate = _createPaymentGate(
+      video,
+      () => {
+        this.midPlaybackGate?.remove();
+        this.midPlaybackGate = null;
+        void this._reopenSession();
+      },
+      refused.text?.title ?? 'Stream paused',
+      refused.text?.sub ?? 'Your paid session ended. Press play to start a new one.',
+      refused.text?.action,
+      claimUrlFor(contentId),
+    );
+  }
+
+  /**
+   * Play from `at` once the element can. On Tier 2 attach() has just set a
+   * fresh signed URL, which resets the position, so wait for its metadata
+   * and seek back before playing; on Tier 1 the source is untouched.
+   */
+  private _resumePlayback(video: HTMLVideoElement, at: number): void {
+    const go = () => {
+      try {
+        if (at > 0 && Number.isFinite(at) && Math.abs((video.currentTime || 0) - at) > 0.5) {
+          video.currentTime = at;
+        }
+      } catch { /* seeking may be momentarily unavailable; ignore */ }
+      video.play().catch(() => {});
+    };
+    if (this.contentInfo?.gated && video.readyState === 0) {
+      const once = () => {
+        video.removeEventListener('loadedmetadata', once);
+        go();
+      };
+      video.addEventListener('loadedmetadata', once);
+      return;
+    }
+    go();
   }
 
   async disconnect(): Promise<SessionSummary> {
@@ -1444,7 +1584,9 @@ export class JubJub extends EventEmitter {
     this.refresher = null;
     this.midPlaybackGate?.remove();
     this.midPlaybackGate = null;
-    if (this.session) await this.session.close(playback);
+    // A session the beacon already closed is not closed twice: the backend
+    // would refuse, and the summary below is still reported to the host.
+    if (this.session && !this.sessionClosed) await this.session.close(playback);
     this.overlay?.remove();
     if (this.beforeUnloadHandler) {
       window.removeEventListener('beforeunload', this.beforeUnloadHandler);
@@ -1454,6 +1596,10 @@ export class JubJub extends EventEmitter {
     if (this.visibilityHandler) {
       document.removeEventListener('visibilitychange', this.visibilityHandler);
       this.visibilityHandler = null;
+    }
+    if (this.resumeHandler) {
+      this.video?.removeEventListener('play', this.resumeHandler);
+      this.resumeHandler = null;
     }
     const summary: SessionSummary = {
       sessionId: this.session?.id ?? '',
