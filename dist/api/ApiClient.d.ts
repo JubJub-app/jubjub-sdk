@@ -17,6 +17,8 @@ export declare class ApiClient {
     private sessionToken;
     constructor(apiUrl: string);
     setSessionToken(token: string): void;
+    /** Drop the held token (expired or revoked) so the next open signs afresh. */
+    clearSessionToken(): void;
     /** True once a viewer/session token is held — the signature step can be skipped. */
     hasSessionToken(): boolean;
     registerContent(platformKey: string, info: {

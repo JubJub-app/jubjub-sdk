@@ -39,6 +39,11 @@ export class ApiClient {
     this.sessionToken = token;
   }
 
+  /** Drop the held token (expired or revoked) so the next open signs afresh. */
+  clearSessionToken(): void {
+    this.sessionToken = null;
+  }
+
   /** True once a viewer/session token is held — the signature step can be skipped. */
   hasSessionToken(): boolean {
     return !!this.sessionToken;

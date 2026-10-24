@@ -23,6 +23,7 @@ import {
   mustReopenNow,
   mustReopenOnPlay,
   reopenModeFor,
+  isAuthRefusal,
   shouldBeaconOnHidden,
   type ReopenMode,
 } from './sessionLifecycle';
@@ -996,6 +997,88 @@ export class JubJub extends EventEmitter {
     }
   }
 
+  /**
+   * Step 3: prove the wallet and mint the viewer token (jj_), shared with
+   * every later video on the page. Gates and answers false on any failure;
+   * true once a token is held. Also called when an open is refused because
+   * the held token expired or was revoked (step 5).
+   */
+  private async _mintViewerToken(contentId: string, address: string): Promise<boolean> {
+  console.log('[JubJub] Step 3: Creating viewer session...');
+
+  // FAIL CLOSED before prompting: a client that cannot sign can never
+  // mint a proven token, and the server rejects the unproven path.
+  if (!this.wallet.canSign()) {
+    this._gatePayment(
+      'Wallet cannot verify ownership',
+      'This wallet cannot sign messages. JubJub needs a signature to ' +
+        'confirm the wallet is yours before streaming.',
+      new Error('wallet client has no signMessage'),
+    );
+    return false;
+  }
+
+  // Confirm, on the provider that connected it, that this origin is still
+  // authorised for the account about to sign. The shared wallet lives for
+  // the page; the viewer can disconnect the site in the wallet between
+  // plays, and signing then fails 4100. Not authorised: one reconnect
+  // (the viewer just pressed play, a prompt is expected), then gate.
+  const authorised = await this._confirmAccountAuthorised(address);
+  if (!authorised.ok) {
+    this._gateWalletError(authorised.error, 'sign');
+    return false;
+  }
+  if (authorised.address.toLowerCase() !== address.toLowerCase()) {
+    // The viewer chose a different account in the wallet's dialog: the
+    // page-shared wallet still points at the old one, so reconnect on
+    // the next play rather than sign for an account the client is not.
+    console.warn('[JubJub] The wallet authorised a different account than the one connected; reconnecting');
+    JubJub.resetWallet();
+    this._gateWalletError(
+      Object.assign(new Error('The wallet authorised a different account. Press play again to continue with it.'), { code: 4100 }),
+      'sign',
+    );
+    return false;
+  }
+
+  try {
+    const minted = await this.api.createViewerSession(contentId, address, (message) =>
+      // Tag signer failures so they are never mistaken for a backend one.
+      this.wallet.signMessage(message).catch((e) => {
+        throw markWalletError(e);
+      }),
+    );
+    // Share it with every later video on this page.
+    _sessionToken = minted.sessionToken;
+  } catch (viewerErr) {
+    // The wallet refused or failed to sign: the viewer's to fix, said
+    // plainly (declined, not authorised for this site, prompt pending).
+    if (isWalletError(viewerErr)) {
+      this._gateWalletError(viewerErr, 'sign');
+      return false;
+    }
+    // C: the backend (nonce or viewer-session) failed → FAIL CLOSED.
+    // This is the one place in step 3 where the payment service is the
+    // problem, so it is the one place that says so.
+    this._gatePayment(
+      'Payment service unavailable',
+      viewerErr instanceof ApiHttpError
+        ? `Couldn't start a payment session (${viewerErr.call.toLowerCase()} answered ${viewerErr.status}). Please try again.`
+        : "Couldn't reach the payment service to start a session. Please try again.",
+      viewerErr,
+    );
+    return false;
+  }
+    return true;
+  }
+
+  /** Forget the viewer token on this page: the shared copy and this
+   * instance's client, so the next open signs a fresh one. */
+  private _forgetSessionToken(): void {
+    _sessionToken = null;
+    this.api.clearSessionToken();
+  }
+
   private _gatePayment(title: string, sub: string, cause?: unknown, action?: string): void {
     const detail =
       cause instanceof Error ? cause.message : cause != null ? String(cause) : '';
@@ -1217,72 +1300,8 @@ export class JubJub extends EventEmitter {
       if (this.api.hasSessionToken()) {
         console.log('[JubJub] Step 3: session token already held — no signature needed');
       } else {
-      console.log('[JubJub] Step 3: Creating viewer session...');
-
-      // FAIL CLOSED before prompting: a client that cannot sign can never
-      // mint a proven token, and the server rejects the unproven path.
-      if (!this.wallet.canSign()) {
-        this._gatePayment(
-          'Wallet cannot verify ownership',
-          'This wallet cannot sign messages. JubJub needs a signature to ' +
-            'confirm the wallet is yours before streaming.',
-          new Error('wallet client has no signMessage'),
-        );
-        return;
-      }
-
-      // Confirm, on the provider that connected it, that this origin is still
-      // authorised for the account about to sign. The shared wallet lives for
-      // the page; the viewer can disconnect the site in the wallet between
-      // plays, and signing then fails 4100. Not authorised: one reconnect
-      // (the viewer just pressed play, a prompt is expected), then gate.
-      const authorised = await this._confirmAccountAuthorised(address);
-      if (!authorised.ok) {
-        this._gateWalletError(authorised.error, 'sign');
-        return;
-      }
-      if (authorised.address.toLowerCase() !== address.toLowerCase()) {
-        // The viewer chose a different account in the wallet's dialog: the
-        // page-shared wallet still points at the old one, so reconnect on
-        // the next play rather than sign for an account the client is not.
-        console.warn('[JubJub] The wallet authorised a different account than the one connected; reconnecting');
-        JubJub.resetWallet();
-        this._gateWalletError(
-          Object.assign(new Error('The wallet authorised a different account. Press play again to continue with it.'), { code: 4100 }),
-          'sign',
-        );
-        return;
-      }
-
-      try {
-        const minted = await this.api.createViewerSession(contentId, address, (message) =>
-          // Tag signer failures so they are never mistaken for a backend one.
-          this.wallet.signMessage(message).catch((e) => {
-            throw markWalletError(e);
-          }),
-        );
-        // Share it with every later video on this page.
-        _sessionToken = minted.sessionToken;
-      } catch (viewerErr) {
-        // The wallet refused or failed to sign: the viewer's to fix, said
-        // plainly (declined, not authorised for this site, prompt pending).
-        if (isWalletError(viewerErr)) {
-          this._gateWalletError(viewerErr, 'sign');
-          return;
-        }
-        // C: the backend (nonce or viewer-session) failed → FAIL CLOSED.
-        // This is the one place in step 3 where the payment service is the
-        // problem, so it is the one place that says so.
-        this._gatePayment(
-          'Payment service unavailable',
-          viewerErr instanceof ApiHttpError
-            ? `Couldn't start a payment session (${viewerErr.call.toLowerCase()} answered ${viewerErr.status}). Please try again.`
-            : "Couldn't reach the payment service to start a session. Please try again.",
-          viewerErr,
-        );
-        return;
-      }
-      console.log('[JubJub] Step 3 done');
+        if (!(await this._mintViewerToken(contentId, address))) return;
+        console.log('[JubJub] Step 3 done');
       }
 
       // 4. Approve USDC
@@ -1346,52 +1365,68 @@ export class JubJub extends EventEmitter {
 
       // 5. Create streaming session
       console.log('[JubJub] Step 5: Creating streaming session...');
-      try {
-        this.session = await Session.create(
-          contentId,
-          address,
-          this.api,
-          // Captured by step 1's getPlaybackInfo. Undefined against a
-          // backend that predates grants — send nothing rather than fail.
-          this.contentInfo?.playback_grant,
-        );
-      } catch (streamErr) {
-        // 402 / 503 funding: say exactly what the viewer must do. The session
-        // token is fine here -- the backend authenticated it before checking
-        // funds -- so it is NOT forgotten.
-        if (isFundingRequiredError(streamErr) || isFundingUnverifiableError(streamErr)) {
-          this._announceFunding(streamErr);
-          const text = fundingMessage(streamErr);
-          this._gatePayment(text.title, text.sub, streamErr, text.action);
+      // A held token the backend refuses (401/403: past its 24-hour TTL, or
+      // revoked) is forgotten EVERYWHERE and a fresh one is signed, then the
+      // open is tried once more. Before 2026-10-24 only the page-shared copy
+      // was forgotten: this instance's ApiClient kept the dead token, so the
+      // quiet reopen skipped step 3 and failed the same way every time.
+      let authRetried = false;
+      for (;;) {
+        try {
+          this.session = await Session.create(
+            contentId,
+            address,
+            this.api,
+            // Captured by step 1's getPlaybackInfo. Undefined against a
+            // backend that predates grants — send nothing rather than fail.
+            this.contentInfo?.playback_grant,
+          );
+          break;
+        } catch (streamErr) {
+          if (!authRetried && isAuthRefusal(streamErr)) {
+            authRetried = true;
+            this._forgetSessionToken();
+            console.warn('[JubJub] The viewer token was refused (expired or revoked); signing a fresh one');
+            if (!(await this._mintViewerToken(contentId, address))) return;
+            continue;
+          }
+          // 402 / 503 funding: say exactly what the viewer must do. The session
+          // token is fine here -- the backend authenticated it before checking
+          // funds -- so it is NOT forgotten.
+          if (isFundingRequiredError(streamErr) || isFundingUnverifiableError(streamErr)) {
+            this._announceFunding(streamErr);
+            const text = fundingMessage(streamErr);
+            this._gatePayment(text.title, text.sub, streamErr, text.action);
+            return;
+          }
+          // 409 content_not_sellable: the piece has no live ownership contract
+          // yet (or is hosted elsewhere). The service is fine and so is the
+          // session token; say what is actually not ready.
+          if (isContentNotPlayableError(streamErr)) {
+            const text = contentNotPlayableMessage(streamErr);
+            this._gatePayment(text.title, text.sub, streamErr, text.action);
+            return;
+          }
+          // D: streaming-session create failed (incl. on-chain createSession
+          // revert) → FAIL CLOSED (gate). Payment is not yet secured here.
+          // A page-shared token that the backend refused (expired 24h TTL,
+          // revoked) must not be reused by the next play: forget it so the
+          // retry proves the wallet afresh instead of failing the same way.
+          // EXCEPT a 402: that is a funding refusal, never an auth failure (the
+          // backend authenticated the token before it checked funds), so the
+          // token stays even when the body could not be read as a funding error.
+          if (!(streamErr instanceof ApiHttpError && streamErr.status === 402)) {
+            this._forgetSessionToken();
+          }
+          this._gatePayment(
+            'Payment service unavailable',
+            "Couldn't start the streaming payment. Please try again.",
+            streamErr,
+          );
           return;
         }
-        // 409 content_not_sellable: the piece has no live ownership contract
-        // yet (or is hosted elsewhere). The service is fine and so is the
-        // session token; say what is actually not ready.
-        if (isContentNotPlayableError(streamErr)) {
-          const text = contentNotPlayableMessage(streamErr);
-          this._gatePayment(text.title, text.sub, streamErr, text.action);
-          return;
-        }
-        // D: streaming-session create failed (incl. on-chain createSession
-        // revert) → FAIL CLOSED (gate). Payment is not yet secured here.
-        // A page-shared token that the backend refused (expired 24h TTL,
-        // revoked) must not be reused by the next play: forget it so the
-        // retry proves the wallet afresh instead of failing the same way.
-        // EXCEPT a 402: that is a funding refusal, never an auth failure (the
-        // backend authenticated the token before it checked funds), so the
-        // token stays even when the body could not be read as a funding error.
-        if (!(streamErr instanceof ApiHttpError && streamErr.status === 402)) {
-          _sessionToken = null;
-        }
-        this._gatePayment(
-          'Payment service unavailable',
-          "Couldn't start the streaming payment. Please try again.",
-          streamErr,
-        );
-        return;
       }
-      console.log('[JubJub] Step 5 done: session', this.session.id);
+      console.log('[JubJub] Step 5 done: session', this.session!.id);
       this.emit('session:start', this.session.id);
 
       // 5.5 Tier 2 (gated host): payment is now secured, so resolve a
