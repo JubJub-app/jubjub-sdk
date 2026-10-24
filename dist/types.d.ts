@@ -215,3 +215,38 @@ export interface SearchResponse {
     /** null exactly when the discoverable corpus is exhausted. */
     next_cursor: string | null;
 }
+/**
+ * DOM events the SDK dispatches on the <video> element itself (2.3.0), so a
+ * declarative host (data-jubjub-content-id, no handle on the instance the
+ * auto-discovery creates) can tell when payment is secured.
+ *
+ * A host playing a paid Tier 1 piece keeps the media URL OFF the element and
+ * sets it only on 'jubjub:armed'; then a missing or failed SDK can never mean
+ * free playback. Tier 2 (gated) pieces need nothing: the SDK sets the signed
+ * URL itself before this event.
+ */
+export declare const JUBJUB_ARMED_EVENT: "jubjub:armed";
+export declare const JUBJUB_GATED_EVENT: "jubjub:gated";
+/**
+ * detail of 'jubjub:armed'. Dispatched synchronously when a streaming session
+ * is open and the SDK is about to (re)start playback: before the SDK's own
+ * video.play(), at the same moment the instance emits 'ready'. Once per
+ * arming; again after a later re-arm (a replay, a cap rollover, a retry after
+ * a gate).
+ */
+export interface JubJubArmedDetail {
+    contentId: string;
+    /** The piece's Tier 2 flag (ContentInfo.gated). */
+    gated: boolean;
+}
+/**
+ * detail of 'jubjub:gated'. Dispatched when the SDK refuses playback because
+ * payment is not secured: the same moment it emits 'payment:required' or
+ * shows its retry gate. title and sub are the gate's words.
+ */
+export interface JubJubGatedDetail {
+    /** null only for an auto-registered piece whose registration failed. */
+    contentId: string | null;
+    title: string;
+    sub: string;
+}
