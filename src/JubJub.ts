@@ -1099,17 +1099,21 @@ export class JubJub extends EventEmitter {
             : Promise.resolve();
         if (tabUnpaid) {
           // The backend ENDED this session for an unpaid tab, so no refresh
-          // can revive it. Approve the figure shown, then start a new session:
-          // the open gate checks the tab again and the crossing collects it.
+          // can revive it. Approve the figure shown, then start a new session
+          // through _reopenSession: the open gate checks the tab again and the
+          // crossing collects it. Before 2.2.0 this re-ran attach() directly,
+          // after the play harness's one-shot 'payment:required' listener had
+          // settled, so a refusal here left the video paused with no gate on
+          // screen. _reopenSession renders its own gate with the backend's
+          // words and a retry (rule 8: blocked playback always shows a prompt).
           void approveFirst
             .then(async () => {
-              const contentId = this.attachedContentId;
-              // Tear down the ended session's loop, tracker and overlay. Its
-              // close may be refused (the backend already closed it): fine.
-              await this.disconnect().catch(() => undefined);
-              if (!contentId) return;
-              await this.attach(contentId, video);
-              if (this.session) video.play().catch(() => {});
+              _pendingSpenderApproval = null;
+              // The backend closed this session: never /close it again.
+              this._markSessionClosed();
+              this.midPlaybackGate?.remove();
+              this.midPlaybackGate = null;
+              await this._reopenSession(reopenModeFor('replay'));
             })
             .catch((approveErr) => {
               console.warn('[JubJub] USDC approval not completed', approveErr);
