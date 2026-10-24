@@ -23,8 +23,7 @@ integrations should load `stable/` or `v/<version>/`.)
 2. Add to your site template:
 
 ```html
-<script src="https://jubjub-app.github.io/jubjub-sdk/stable/jubjub-sdk.umd.js"></script>
-<script>JubJub.init({ platformKey: 'pk_YOUR_KEY' });</script>
+<script src="https://jubjub-app.github.io/jubjub-sdk/stable/jubjub-sdk.umd.js" crossorigin="anonymous"></script><script>JubJub.init({ platformKey: 'pk_...' });</script>
 
 <!-- Optional: surface JubJub's whole catalogue on your site -->
 <script>
