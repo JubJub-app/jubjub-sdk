@@ -143,6 +143,16 @@ export declare class JubJub extends EventEmitter {
      * re-check; the account the wallet now lists is the one to sign with.
      */
     private _confirmAccountAuthorised;
+    /**
+     * Step 3: prove the wallet and mint the viewer token (jj_), shared with
+     * every later video on the page. Gates and answers false on any failure;
+     * true once a token is held. Also called when an open is refused because
+     * the held token expired or was revoked (step 5).
+     */
+    private _mintViewerToken;
+    /** Forget the viewer token on this page: the shared copy and this
+     * instance's client, so the next open signs a fresh one. */
+    private _forgetSessionToken;
     private _gatePayment;
     /**
      * Tell the host about a typed funding error before gating. 402 ->

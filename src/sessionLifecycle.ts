@@ -102,3 +102,14 @@ export function reopenModeFor(outcome: 'rollover' | 'closed' | 'replay'): Reopen
 export function mustReopenNow(media: MediaPlayState): boolean {
   return media.paused !== true && media.ended !== true;
 }
+
+/**
+ * Did the backend refuse an open because of the viewer TOKEN? 401 (expired
+ * past its 24-hour TTL, revoked) or 403 (unreadable). The SDK then forgets the
+ * token, signs a fresh one and opens once more. A 402/503 funding answer or a
+ * 409 content answer is never this: the token was accepted before those.
+ */
+export function isAuthRefusal(err: unknown): boolean {
+  const status = (err as { status?: unknown } | null)?.status;
+  return status === 401 || status === 403;
+}
