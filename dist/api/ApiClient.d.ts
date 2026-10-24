@@ -1,4 +1,4 @@
-import type { ContentInfo, SearchParams, SearchResponse } from '../types';
+import type { ContentInfo, SearchParams, SearchResponse, SegmentResponse } from '../types';
 /**
  * A JubJub backend call that did not succeed: a non-2xx status, or a 2xx body
  * missing what the SDK needs. Distinct from wallet errors on purpose: the
@@ -87,10 +87,26 @@ export declare class ApiClient {
         url: string;
         expiresInSeconds: number;
     }>;
-    recordSegment(sessionId: string): Promise<void>;
+    /**
+     * Record one six-second segment against a session and return what the
+     * backend said about it (SegmentResponse). Before 2.2.0 the body was not
+     * read; now `status` and `end_reason` decide whether metering continues
+     * (sessionLifecycle.segmentOutcome): a session that reached its $2.00 cap
+     * answers 200 with status "closed" and end_reason "cap_reached", and the
+     * SDK rolls over to a new one. Returns null when the call failed or the
+     * body could not be read; the caller keeps metering and the next segment
+     * settles it.
+     */
+    recordSegment(sessionId: string): Promise<SegmentResponse | null>;
     closeSession(sessionId: string, playbackSeconds: number): Promise<void>;
     beaconClose(sessionId: string, walletAddress: string, playbackSeconds: number): void;
 }
+/**
+ * A segment body as the SDK reads it. Missing fields take their neutral
+ * value: no status reads as "active" (an older backend accepted the segment
+ * with 200 and said nothing more), no end_reason is null. Never throws.
+ */
+export declare function toSegmentResponse(sessionId: string, raw: unknown): SegmentResponse;
 /**
  * Playback info as the SDK exposes it (content:loaded, getContentInfo()).
  * An explicit whitelist, not the raw body: whatever else the backend returns
