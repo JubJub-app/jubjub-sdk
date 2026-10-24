@@ -59,7 +59,10 @@ import type {
   WalletLike,
   SearchParams,
   SearchResponse,
+  JubJubArmedDetail,
+  JubJubGatedDetail,
 } from './types';
+import { JUBJUB_ARMED_EVENT, JUBJUB_GATED_EVENT } from './types';
 
 const DEFAULT_API_URL = 'https://api.jubjubapp.com';
 /** package.json version, injected by vite `define`; see src/build-info.d.ts. */
@@ -202,6 +205,43 @@ function _createLoader(video: HTMLVideoElement): { remove: () => void } {
 }
 
 // ---------------------------------------------------------------------------
+// DOM signals on the <video> element (2.3.0): 'jubjub:armed' when payment is
+// secured and playback may start, 'jubjub:gated' when it is refused. A
+// declarative host has no handle on the instance auto-discovery creates, so
+// these are how it learns when to attach a Tier 1 source. Never throws: a
+// host listener's error or a missing CustomEvent must not break the flow.
+// ---------------------------------------------------------------------------
+const DEFAULT_GATE_TITLE = 'Payment approval required to watch';
+const DEFAULT_GATE_SUB = 'Approve the USDC payment in your wallet to start streaming.';
+
+function _dispatchElementEvent(
+  video: HTMLVideoElement | null,
+  name: string,
+  detail: JubJubArmedDetail | JubJubGatedDetail,
+): void {
+  if (!video || typeof video.dispatchEvent !== 'function') return;
+  try {
+    if (typeof CustomEvent !== 'function') return;
+    video.dispatchEvent(new CustomEvent(name, { detail }));
+  } catch (e) {
+    console.warn(`[JubJub] ${name} listener failed`, e);
+  }
+}
+
+function _dispatchGated(
+  video: HTMLVideoElement | null,
+  contentId: string | null | undefined,
+  title: string | undefined,
+  sub: string | undefined,
+): void {
+  _dispatchElementEvent(video, JUBJUB_GATED_EVENT, {
+    contentId: contentId || null,
+    title: title || DEFAULT_GATE_TITLE,
+    sub: sub || DEFAULT_GATE_SUB,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Payment-required gate shown when approval is rejected / not granted.
 // Keeps the video covered (it stays paused) and offers a retry affordance.
 // ---------------------------------------------------------------------------
@@ -223,13 +263,12 @@ function _createPaymentGate(
 
   const title = document.createElement('div');
   title.style.cssText = 'font-size:15px;font-weight:600;max-width:340px;line-height:1.4;';
-  title.textContent = titleText || 'Payment approval required to watch';
+  title.textContent = titleText || DEFAULT_GATE_TITLE;
   el.appendChild(title);
 
   const sub = document.createElement('div');
   sub.style.cssText = 'font-size:13px;opacity:0.85;max-width:340px;line-height:1.4;';
-  sub.textContent =
-    subText || 'Approve the USDC payment in your wallet to start streaming.';
+  sub.textContent = subText || DEFAULT_GATE_SUB;
   el.appendChild(sub);
 
   const btn = document.createElement('button');
@@ -343,6 +382,8 @@ export class JubJub extends EventEmitter {
   private sessionEndEmitted = false;
   /** A re-open is in flight; a second `play` must not start another. */
   private reopening = false;
+  /** 'jubjub:armed' has gone out for the current attach() (once per arming). */
+  private armedDispatched = false;
 
   constructor(options: JubJubOptions = {}) {
     super();
@@ -366,6 +407,10 @@ export class JubJub extends EventEmitter {
 
   /** The package.json version this bundle was built from. */
   static readonly version: string = SDK_VERSION;
+
+  /** The element event names, reachable from the UMD global (2.3.0). */
+  static readonly ARMED_EVENT = JUBJUB_ARMED_EVENT;
+  static readonly GATED_EVENT = JUBJUB_GATED_EVENT;
 
   /**
    * The typed funding errors, reachable from the UMD global
@@ -737,6 +782,10 @@ export class JubJub extends EventEmitter {
       const setup = async () => {
         let sdk: JubJub | undefined;
         let gated = false;
+        // The SDK's own 'payment:required' (via _gatePayment) has already
+        // dispatched 'jubjub:gated'; only the harness's own refusals (the
+        // timeout, a throw) dispatch it here.
+        let gatedBySdk = false;
         let gateTitle: string | undefined;
         let gateSub: string | undefined;
         let gateAction: string | undefined;
@@ -779,6 +828,7 @@ export class JubJub extends EventEmitter {
               gateTitle = e?.message || gateTitle;
               gateSub = e?.sub || gateSub;
               gateAction = e?.action || gateAction;
+              if (!settled) gatedBySdk = true;
               done(true);
             });
             sdk!.on('error', () => done(false));
@@ -806,12 +856,18 @@ export class JubJub extends EventEmitter {
             gateAction,
             claimUrlFor(contentId),
           );
+          if (!gatedBySdk) _dispatchGated(video, contentId, gateTitle, gateSub);
           armPlay();
           return;
         }
 
         // Payment secured ('ready'), or a benign post-payment hiccup ('error'
         // raised after the on-chain session already exists) — resume.
+        // 'jubjub:armed' goes out BEFORE play(): on 'ready' attach() already
+        // sent it (this call no-ops); after a post-session 'error' it is sent
+        // here, and never when no session is open (nothing was paid for, so
+        // a host holding a Tier 1 source back keeps it back).
+        sdk?._dispatchArmed();
         video.play().catch(() => {});
       };
 
@@ -889,6 +945,8 @@ export class JubJub extends EventEmitter {
     video: HTMLVideoElement,
   ): Promise<void> {
     let contentId: string;
+    // So a registration failure's gate reaches the element ('jubjub:gated').
+    this.video = video;
     try {
       if (!_platformKey) {
         throw new Error('Call JubJub.init({ platformKey }) before using auto-registration.');
@@ -1079,10 +1137,27 @@ export class JubJub extends EventEmitter {
     this.api.clearSessionToken();
   }
 
+  /**
+   * 'jubjub:armed' on the element: a streaming session is open and playback
+   * may start. Once per attach(); a no-op without an open session, so it can
+   * never tell a host to attach a source nothing was paid for.
+   */
+  private _dispatchArmed(): void {
+    if (this.armedDispatched || !this.session || this.sessionClosed) return;
+    const contentId = this.attachedContentId;
+    if (!this.video || !contentId) return;
+    this.armedDispatched = true;
+    _dispatchElementEvent(this.video, JUBJUB_ARMED_EVENT, {
+      contentId,
+      gated: this.contentInfo?.gated === true,
+    });
+  }
+
   private _gatePayment(title: string, sub: string, cause?: unknown, action?: string): void {
     const detail =
       cause instanceof Error ? cause.message : cause != null ? String(cause) : '';
     console.warn(`[JubJub] Gating playback (no free play): ${title}`, detail);
+    _dispatchGated(this.video, this.attachedContentId ?? this.options.contentId, title, sub);
     const err = new Error(title) as Error & { sub?: string; action?: string; cause?: unknown };
     err.sub = sub;
     if (action) err.action = action;
@@ -1224,6 +1299,12 @@ export class JubJub extends EventEmitter {
       text?.action,
       claimUrlFor(this.options.contentId),
     );
+    _dispatchGated(
+      video,
+      this.attachedContentId ?? this.options.contentId,
+      text?.title ?? 'Stream paused',
+      text?.sub ?? 'Your paid session ended. Start a new session to keep watching.',
+    );
     if (text) {
       const err = new Error(text.title) as Error & { sub?: string; action?: string; cause?: unknown };
       err.sub = text.sub;
@@ -1240,6 +1321,7 @@ export class JubJub extends EventEmitter {
   async attach(contentId: string, video: HTMLVideoElement): Promise<void> {
     this.video = video;
     this.attachedContentId = contentId || null;
+    this.armedDispatched = false;
 
     if (!contentId) {
       console.warn('[JubJub] No content ID — video plays without payments.');
@@ -1549,6 +1631,10 @@ export class JubJub extends EventEmitter {
       this.sessionEndEmitted = false;
 
       console.log('[JubJub] Ready — streaming payments active');
+      // 'jubjub:armed' on the element, synchronously and before anything
+      // calls video.play(): the play harness and _reopenSession resume only
+      // after this returns. A Tier 1 host attaches its held-back source here.
+      this._dispatchArmed();
       this.emit('ready');
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
@@ -1647,9 +1733,15 @@ export class JubJub extends EventEmitter {
       try { video.pause(); } catch { /* ignore */ }
     }
     const resumeAt = video.currentTime || 0;
-    const refused: { text: { title: string; sub?: string; action?: string } | null } = { text: null };
+    const refused: {
+      text: { title: string; sub?: string; action?: string } | null;
+      // The refusal came through 'payment:required', which already
+      // dispatched 'jubjub:gated' on the element.
+      announced: boolean;
+    } = { text: null, announced: false };
     const onRequired = (e: any) => {
       refused.text = { title: e?.message || 'Payment required', sub: e?.sub, action: e?.action };
+      refused.announced = true;
     };
     this.on('payment:required', onRequired);
     console.log(
@@ -1696,6 +1788,14 @@ export class JubJub extends EventEmitter {
     // shows a prompt with the backend's words and a retry.
     try { video.pause(); } catch { /* ignore */ }
     this.sessionClosed = true;
+    if (!refused.announced) {
+      _dispatchGated(
+        video,
+        contentId,
+        refused.text?.title ?? 'Stream paused',
+        refused.text?.sub ?? 'Your paid session ended. Press play to start a new one.',
+      );
+    }
     if (this.midPlaybackGate) return;
     this.midPlaybackGate = _createPaymentGate(
       video,

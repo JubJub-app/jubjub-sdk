@@ -85,7 +85,10 @@ export type {
   SearchParams,
   SearchResultCard,
   SearchResponse,
+  JubJubArmedDetail,
+  JubJubGatedDetail,
 } from './types';
+export { JUBJUB_ARMED_EVENT, JUBJUB_GATED_EVENT } from './types';
 
 // Default export = the JubJub class. In UMD builds this becomes
 // the value of window.JubJub so static methods like

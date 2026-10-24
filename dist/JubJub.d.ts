@@ -37,9 +37,14 @@ export declare class JubJub extends EventEmitter {
     private sessionEndEmitted;
     /** A re-open is in flight; a second `play` must not start another. */
     private reopening;
+    /** 'jubjub:armed' has gone out for the current attach() (once per arming). */
+    private armedDispatched;
     constructor(options?: JubJubOptions);
     /** The package.json version this bundle was built from. */
     static readonly version: string;
+    /** The element event names, reachable from the UMD global (2.3.0). */
+    static readonly ARMED_EVENT: "jubjub:armed";
+    static readonly GATED_EVENT: "jubjub:gated";
     /**
      * The typed funding errors, reachable from the UMD global
      * (`err instanceof JubJub.FundingRequiredError`) as well as the ESM export.
@@ -153,6 +158,12 @@ export declare class JubJub extends EventEmitter {
     /** Forget the viewer token on this page: the shared copy and this
      * instance's client, so the next open signs a fresh one. */
     private _forgetSessionToken;
+    /**
+     * 'jubjub:armed' on the element: a streaming session is open and playback
+     * may start. Once per attach(); a no-op without an open session, so it can
+     * never tell a host to attach a source nothing was paid for.
+     */
+    private _dispatchArmed;
     private _gatePayment;
     /**
      * Tell the host about a typed funding error before gating. 402 ->

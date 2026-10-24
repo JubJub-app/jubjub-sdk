@@ -12,7 +12,7 @@ That is the stable address: it moves only after a release has passed the full
 test suite. To pin a version instead:
 
 ```html
-<script src="https://jubjub-app.github.io/jubjub-sdk/v/2.2.1/jubjub-sdk.umd.js"></script>
+<script src="https://jubjub-app.github.io/jubjub-sdk/v/2.3.0/jubjub-sdk.umd.js"></script>
 ```
 
 (The older `.../jubjub-sdk/dist/jubjub-sdk.umd.js` address is legacy: it is
@@ -197,6 +197,37 @@ sdk.on('session:end', (summary) => { /* final summary */ });
 sdk.on('error', (error) => { /* handle error */ });
 sdk.on('ready', () => { /* everything set up */ });
 ```
+
+### Element events: armed and gated (2.3.0)
+
+The SDK also dispatches two DOM events on the `<video>` element itself, so a
+page using `data-jubjub-content-id` (which never holds the SDK instance) can
+tell when payment is secured.
+
+| Event | When | `event.detail` |
+|---|---|---|
+| `jubjub:armed` | A streaming session is open and the SDK is about to start playback. Sent synchronously, before the SDK calls `video.play()`, at the same moment the instance emits `ready`. Once per arming; again after a replay, a cap rollover or a retry after a gate. | `{ contentId, gated }` (`gated` is the piece's Tier 2 flag) |
+| `jubjub:gated` | Playback was refused because payment is not secured: the same moment the SDK emits `payment:required` or shows its retry gate. | `{ contentId, title, sub }` (the gate's words; `contentId` is null only when auto-registration failed) |
+
+For a paid Tier 1 piece (a public URL), keep the URL off the element and set
+it on `jubjub:armed`. If the SDK never loads or never arms, nothing plays:
+
+```html
+<video id="player" data-jubjub-content-id="cnt_abc123" controls></video>
+<script>
+  const video = document.getElementById('player');
+  video.addEventListener('jubjub:armed', () => {
+    if (!video.src) video.src = 'https://creator.example/video.m3u8';
+  });
+  video.addEventListener('jubjub:gated', (e) => console.log(e.detail.title));
+</script>
+```
+
+Set the source only when the element has none: a later `jubjub:armed` (a
+replay or a rollover) must not reset the position. Tier 2 pieces need nothing:
+the SDK sets the signed URL itself before `jubjub:armed`. The names are
+exported as `JUBJUB_ARMED_EVENT` and `JUBJUB_GATED_EVENT`, and on the script
+tag global as `JubJub.ARMED_EVENT` and `JubJub.GATED_EVENT`.
 
 ## API Reference
 

@@ -20,5 +20,6 @@ export { announcedProviders, candidateProviders, describeProvider, selectProvide
 export type { Eip6963ProviderInfo, ProviderCandidate } from './walletProviders';
 export { MEMBER_FALLBACK_NAME, publicProfileFrom, stripInternalIdentity, redactEmails, } from './privacy';
 export type { PublicProfile } from './privacy';
-export type { JubJubOptions, JubJubInitConfig, ContentRegistration, ContentInfo, SessionSummary, SegmentResponse, CostInfo, WalletLike, SearchParams, SearchResultCard, SearchResponse, } from './types';
+export type { JubJubOptions, JubJubInitConfig, ContentRegistration, ContentInfo, SessionSummary, SegmentResponse, CostInfo, WalletLike, SearchParams, SearchResultCard, SearchResponse, JubJubArmedDetail, JubJubGatedDetail, } from './types';
+export { JUBJUB_ARMED_EVENT, JUBJUB_GATED_EVENT } from './types';
 export { JubJub as default } from './JubJub';

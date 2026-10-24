@@ -9,7 +9,7 @@
     "declaration": false,
     "outDir": ".test-build",
     "rootDir": ".",
-    "lib": ["ES2020", "DOM"]
+    "lib": ["ES2022", "DOM", "DOM.Iterable"]
   },
-  "include": ["src/walletChain.ts", "test/**/*.ts"]
+  "include": ["src/walletChain.ts", "src/build-info.d.ts", "src/privy-shim.d.ts", "test/**/*.ts"]
 }

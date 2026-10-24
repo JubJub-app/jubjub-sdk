@@ -1,6 +1,6 @@
 # JubJub SDK Reference
 
-**Version:** 2.2.1
+**Version:** 2.3.0
 **Chain:** Base (Coinbase L2) — `network: 'mainnet'` → Base mainnet (default), `network: 'testnet'` → Base Sepolia
 **Status:** Live on Base mainnet. Omitting `network` means mainnet; pass `network: 'testnet'` to develop against Sepolia.
 
@@ -58,7 +58,7 @@ const { content_id } = await res.json();
 
 That's it. `stable/` moves only after a release has passed the full test
 suite. To pin a version, load
-`https://jubjub-app.github.io/jubjub-sdk/v/2.2.1/jubjub-sdk.umd.js` instead.
+`https://jubjub-app.github.io/jubjub-sdk/v/2.3.0/jubjub-sdk.umd.js` instead.
 The older `.../jubjub-sdk/dist/jubjub-sdk.umd.js` address is legacy (main's
 unpinned build output); it keeps working, but new integrations load `stable/`
 or `v/<version>/`.
@@ -425,6 +425,26 @@ dashboard's /watch and /embed behave identically.
   check on every push and pull request refuses a tree where they differ. Load
   `https://jubjub-app.github.io/jubjub-sdk/stable/jubjub-sdk.umd.js`.
 
+2.3.0 (element events, 2026-10-25). The SDK dispatches `jubjub:armed` and
+`jubjub:gated` on the `<video>` element, so JubJub's own players (and any
+declarative host) can keep a paid Tier 1 piece's URL off the element until
+payment is secured. Nothing about pricing, approvals, caps or metering
+changed.
+
+- `jubjub:armed`, detail `{ contentId, gated }`: sent synchronously when a
+  session is open, before the SDK calls `video.play()`, from `attach()` at the
+  moment it emits `ready` (the declarative play harness and `JubJub.play()`
+  alike). Once per `attach()`; a re-open (replay, cap rollover, retry) sends
+  it again. Never sent without an open session.
+- `jubjub:gated`, detail `{ contentId, title, sub }`: sent whenever the SDK
+  refuses playback (`payment:required`, the play harness's own timeout, a
+  mid-playback gate, a refused re-open). Once per refusal.
+- A Tier 1 element with no source until `jubjub:armed` works: nothing before
+  `ready` reads the media (no `duration`, no `readyState`, no check on
+  `src`). One exception: auto-registration (`data-jubjub-creator`) reads the
+  media URL from `src` when `data-jubjub-media-url` is absent, so a host that
+  holds the source back there must set `data-jubjub-media-url`.
+
 ### Static shorthand
 
 ```javascript
@@ -449,6 +469,20 @@ sdk.on('cost', ({ usdc, seconds, formatted }) => {});
 sdk.on('session:end', (summary) => {});
 sdk.on('error', (error) => {});
 sdk.on('ready', () => {});
+```
+
+Element events (2.3.0), dispatched on the `<video>` itself for hosts that
+use `data-jubjub-content-id` and never hold the instance:
+
+```javascript
+video.addEventListener('jubjub:armed', (e) => {
+  // e.detail: { contentId, gated }. Payment is secured; the SDK calls
+  // video.play() right after this returns. Attach a held-back Tier 1 URL now.
+  if (!video.src) video.src = tier1Url;
+});
+video.addEventListener('jubjub:gated', (e) => {
+  // e.detail: { contentId, title, sub }. Playback refused; the gate's words.
+});
 ```
 
 ### Methods
@@ -545,7 +579,7 @@ the root of `main`, so three addresses exist:
 | Address | What it is |
 |---|---|
 | `https://jubjub-app.github.io/jubjub-sdk/stable/jubjub-sdk.umd.js` | The release to load. Moves only after `npm run release` has passed the full test suite. |
-| `https://jubjub-app.github.io/jubjub-sdk/v/2.2.1/jubjub-sdk.umd.js` | That release, pinned. One folder per version. |
+| `https://jubjub-app.github.io/jubjub-sdk/v/2.3.0/jubjub-sdk.umd.js` | That release, pinned. One folder per version. |
 | `https://jubjub-app.github.io/jubjub-sdk/dist/jubjub-sdk.umd.js` | Legacy: main's build output, unpinned. Kept working. |
 
 `npm run release` runs the tests, builds, and copies `dist/jubjub-sdk.umd.js`
