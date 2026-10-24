@@ -1,6 +1,6 @@
 # JubJub SDK Reference
 
-**Version:** 2.1.6
+**Version:** 2.2.0
 **Chain:** Base (Coinbase L2) — `network: 'mainnet'` → Base mainnet (default), `network: 'testnet'` → Base Sepolia
 **Status:** Live on Base mainnet. Omitting `network` means mainnet; pass `network: 'testnet'` to develop against Sepolia.
 
@@ -50,13 +50,18 @@ const { content_id } = await res.json();
 
 ```html
 <video id="player" src="https://your-cdn.com/video.mp4" controls></video>
-<script src="https://jubjub-app.github.io/jubjub-sdk/dist/jubjub-sdk.umd.js"></script>
+<script src="https://jubjub-app.github.io/jubjub-sdk/stable/jubjub-sdk.umd.js"></script>
 <script>
   JubJub.play('cnt_abc123', document.getElementById('player'));
 </script>
 ```
 
-That's it.
+That's it. `stable/` moves only after a release has passed the full test
+suite. To pin a version, load
+`https://jubjub-app.github.io/jubjub-sdk/v/2.2.0/jubjub-sdk.umd.js` instead.
+The older `.../jubjub-sdk/dist/jubjub-sdk.umd.js` address is legacy (main's
+unpinned build output); it keeps working, but new integrations load `stable/`
+or `v/<version>/`.
 
 ---
 
@@ -64,13 +69,15 @@ That's it.
 
 1. SDK fetches payment config from JubJub API (public endpoint, no auth). The video is paused until payment is in place (fail closed)
 2. Wallet connect prompt appears (MetaMask, Coinbase Wallet, Rainbow), then one free signature per page proves the wallet
-3. USDC allowance checked against the streaming spender (`payment_router` in playback-info). The viewer approves a standing allowance when the current one is below the SDK's threshold; not on every play
-4. Streaming session opens. The backend refuses (402) when allowance or balance is below its floor or a tab is unpaid; the gate shows what to do
+3. USDC allowance checked against the streaming spender (`payment_router` in playback-info). The viewer approves a standing allowance (their pot, $10 by default) only when the current one is below $0.50, the backend's floor; with $0.50 or more approved they are never asked, on any site
+4. Streaming session opens. The backend refuses (402) when allowance or balance is below its floor or a tab is unpaid; the gate shows what to do, and the approve button asks for exactly the backend's figure
 5. Cost overlay appears on the video: `$0.0042 · 0:42 · Powered by JubJub`
-6. Heartbeat fires every 6 seconds of playback
-7. Video pauses: payments pause. Seek backwards: cost stays (accumulative). Seek forward: no charge for skipped content. A backgrounded tab is charged for the time that actually played
-8. Tab closes: a beacon closes the session with the exact playback seconds and settlement happens on-chain. Hiding the tab closes the session only while the video is paused or ended; play after a closed session opens a new one first
-9. USDC flows: viewer -> streaming spender -> content contract -> catalogue -> creator
+6. Heartbeat fires every 6 seconds of playback, and every answer is read: a session the backend closed is never metered again
+7. Video pauses: payments pause; nothing accrues however long the pause. Seek backwards: cost stays (accumulative). Seek forward: no charge for skipped content. A backgrounded tab is charged for the time that actually played
+8. Video ends: the session closes at once with the seconds played and charging stops. Play again (this video or another) and a session reopens quietly from the same pot, no prompt unless the pot cannot cover it
+9. A session reaches its $2.00 cap: the backend closes it and the SDK quietly opens a new one from the same pot while the video keeps playing; if the pot cannot cover the new session the video pauses under the payment prompt
+10. Tab closes: a beacon closes the session with the exact playback seconds and settlement happens on-chain. Hiding the tab closes the session only while the video is paused or ended; play after a closed session opens a new one first
+11. USDC flows: viewer -> streaming spender -> content contract -> catalogue -> creator
 
 ---
 
@@ -375,6 +382,43 @@ calls that a payment-service outage.
 - `showCostOverlay` is typed on `JubJubInitConfig`; the dead Privy import
   left `Wallet.ts`; `payment_router` documented as the streaming spender.
 
+2.2.0 (the pot model, Tom, 2026-10-24). A viewer approves once; that approval
+is their pot; they are asked again only when the pot cannot cover viewing. The
+dashboard's /watch and /embed behave identically.
+
+- Pre-flight approval only below the floor. Before opening a session the SDK
+  reads allowance(viewer, spender) and approves only when it is below
+  $0.50 (`PREFLIGHT_FLOOR_MICRO`, mirroring the backend's
+  `FUNDING_FLOOR_MICRO`). Before, the threshold was max($2, price x 120 min),
+  so a viewer who had approved $1 on the studio was asked again here. The
+  standing amount ($10, `streamingAllowanceUsd`, capped at $500) is unchanged
+  and never below the floor. A 402 still drives exact approvals through
+  `required_micro` and `spender`. `needsPreflightApproval` and
+  `standingAllowanceMicro` are exported (`src/allowancePolicy.ts`).
+- Every segment answer is read. `ApiClient.recordSegment` returns the
+  backend's `SegmentResponse` (`status`, `end_reason`). `status != "active"`
+  stops metering that session and marks it closed locally; `/close` is never
+  sent for it. `end_reason: "cap_reached"` (the $2.00 per-session cap) opens
+  a new session quietly while the video keeps playing; any other closure
+  pauses, opens a new session and resumes. A 409 `session_capped` on a Tier 2
+  URL refresh is handled the same way (`SessionCappedError`). `segmentOutcome`,
+  `reopenModeFor` and `mustReopenNow` are exported (`src/sessionLifecycle.ts`).
+- Ended closes the session. The media's `ended` event closes the session at
+  once with the seconds played (POST /close), stops metering and emits
+  `session:end` (once; `disconnect()` does not close or emit it again). A
+  replay reopens quietly through the same path as any closed session.
+- A refusal during the unpaid-tab restart now renders the gate. The
+  `tab_unpaid` retry re-ran `attach()` after the play harness's one-shot
+  listener had settled, so a refusal could leave the video paused with no
+  gate; it now runs through `_reopenSession`, which always shows the
+  backend's words and a retry.
+- Charged only for played seconds, pinned by tests: no segment while paused,
+  nothing after `ended`.
+- Stable hosting. `npm run release` runs the tests, builds and copies
+  `dist/jubjub-sdk.umd.js` to `stable/` and `v/<version>/`; a GitHub Actions
+  check on every push and pull request refuses a tree where they differ. Load
+  `https://jubjub-app.github.io/jubjub-sdk/stable/jubjub-sdk.umd.js`.
+
 ### Static shorthand
 
 ```javascript
@@ -429,13 +473,19 @@ attributes are never touched.
 |---|---|
 | No content ID and no creator attribute | SDK ignores the video. It plays as the page set it. |
 | Invalid content ID (404) or playback-info unavailable | Gate: "Unable to load payment details". Video stays paused. |
-| Video pauses | Payments pause. |
+| Video pauses | Payments pause. Nothing accrues and no segment is sent, however long the pause; resuming continues the same session. |
+| Video ends | The session closes at once with the seconds played; charging stops; `session:end` emitted. Play again and a new session opens quietly from the pot. |
+| Session reaches its $2.00 cap (segment answers `closed`, `end_reason: cap_reached`) | The SDK stops metering it, never sends `/close` for it, and quietly opens a new session from the same pot while the video keeps playing. If the open answers 402, the video pauses under the gate with the backend's figures. |
+| 409 `session_capped` on a gated-URL refresh | Same as the cap above (Tier 2). Not a gate. |
+| Backend closes the session for another reason (segment answers `closed`) | Metering stops; `/close` is never sent for it. While playing: pause, open a new session, resume. Paused: the next play opens a new one. |
 | Seek backwards | Cost stays. Accumulative, never decreases. |
 | Seek forward | No charge for skipped content. Seeks are detected from the element's `seeking` and `seeked` events. |
 | Tab backgrounded (`timeupdate` throttled) | Time actually played is charged, bounded by the wall clock. |
 | Tab close | Beacon closes the session with the exact seconds watched; settlement follows on-chain. |
 | Tab hidden | Beacon closes the session only while the video is paused or ended. Background audio keeps it open; the idle sweep closes an abandoned one. |
-| Play after the session was closed | SDK pauses, opens a new session, resumes from the same position once it is open. A refusal is shown in the gate. |
+| Play after the session was closed (ended, cap, beacon, idle) | SDK pauses, opens a new session from the pot, resumes from the same position once it is open. No prompt unless the open answers 402; a refusal is shown in the gate with the backend's words and a retry. |
+| Pre-flight allowance at or above $0.50 | No approval asked. The backend decides whether the session opens. |
+| Pre-flight allowance below $0.50 | The wallet asks for the standing allowance ($10 by default). |
 | 402 from the backend (allowance, balance, unpaid tab) | Gate with the backend's figure; the approve button asks for exactly that. `funding:required` emitted. |
 | 402 with a reason this bundle does not know | Gate with the backend's message (`FundingRequiredError`, reason `'unknown'`). No approval is guessed; the page token is kept. |
 | No wallet | Gate: "Connect a wallet to watch". Video stays paused. `payment:required` emitted. |
@@ -477,14 +527,27 @@ The auth chain in `verify_token_cookie` checks in order: platform key -> agent k
 
 | | Size |
 |---|---|
-| UMD (uncompressed) | 335 KB (2.1.6, `dist/jubjub-sdk.umd.js`) |
-| UMD (gzipped) | 103 KB |
+| UMD (uncompressed) | 338 KB (2.2.0, `dist/jubjub-sdk.umd.js`) |
+| UMD (gzipped) | 104 KB |
 | Dependency | viem (bundled) |
 | Browser support | ES2020+ |
 | Peer dependency (optional) | @privy-io/js-sdk-core (declared; not imported by the bundle) |
 
-`dist/` is built by hand (`npm run build`) and committed; GitHub Pages serves
-`main`'s `dist/` with no version pin. `JubJub.version` reports the
+`dist/` is built by hand (`npm run build`) and committed. GitHub Pages serves
+the root of `main`, so three addresses exist:
+
+| Address | What it is |
+|---|---|
+| `https://jubjub-app.github.io/jubjub-sdk/stable/jubjub-sdk.umd.js` | The release to load. Moves only after `npm run release` has passed the full test suite. |
+| `https://jubjub-app.github.io/jubjub-sdk/v/2.2.0/jubjub-sdk.umd.js` | That release, pinned. One folder per version. |
+| `https://jubjub-app.github.io/jubjub-sdk/dist/jubjub-sdk.umd.js` | Legacy: main's build output, unpinned. Kept working. |
+
+`npm run release` runs the tests, builds, and copies `dist/jubjub-sdk.umd.js`
+to `v/<version>/` and `stable/`; the copies are committed with `dist/`.
+`npm run check:release` (also the Release check workflow on every push to
+main and every pull request) fails unless both copies exist and are
+byte-identical to `dist/` for the version in package.json. `.nojekyll` at the
+root keeps Pages from processing the bundle. `JubJub.version` reports the
 package.json version the bundle was built from.
 
 ---
@@ -502,12 +565,13 @@ initialised with `network: 'testnet'`.
 - Revenue auto-forward from content contracts to catalogues
 - SDK Player with cost overlay and accumulative tracking
 - Beacon-close on tab close for precise settlement
+- Stable and versioned bundle addresses (`stable/`, `v/<version>/`) checked in CI
+- The pot model: approve once, charged only while playing, ended closes, replay and the $2.00 cap reopen quietly
 - Three auth paths (platform key, viewer JWT, Firebase)
 - Content hash dedup for provenance
 
 **Pending:**
 - Privy zero-config wallet (no browser extension needed)
-- A versioned CDN URL for the bundle (today: GitHub Pages serving `main`'s `dist/`, unpinned)
 - npm publish (`@jubjub/sdk`)
 - Secondary market for brand tokens
 - Dynamic pricing per content
