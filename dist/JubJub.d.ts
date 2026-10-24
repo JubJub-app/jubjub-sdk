@@ -19,6 +19,18 @@ export declare class JubJub extends EventEmitter {
     private attachedContentId;
     /** Tier-2 only: mid-playback fail-closed gate (single instance, no stacking). */
     private midPlaybackGate;
+    /**
+     * Set once this instance's session has been closed by the beacon (tab
+     * hidden while paused or ended, pagehide, beforeunload). Playback must
+     * never continue against it: the next `play` opens a new session first
+     * (_reopenSession) and plays only once it is open. Cleared when attach()
+     * completes.
+     */
+    private sessionClosed;
+    /** Bound to the video's `play` alongside the beacon handlers; see attach(). */
+    private resumeHandler;
+    /** A re-open is in flight; a second `play` must not start another. */
+    private reopening;
     constructor(options?: JubJubOptions);
     /** The package.json version this bundle was built from. */
     static readonly version: string;
@@ -145,6 +157,31 @@ export declare class JubJub extends EventEmitter {
      */
     private _gateMidPlayback;
     attach(contentId: string, video: HTMLVideoElement): Promise<void>;
+    /**
+     * The beacon has closed this instance's session. Nothing may be sent
+     * against it again: no segment (the tracker stops) and no URL refresh (the
+     * refresher stops, which also drops its own replay handler so only
+     * _reopenSession answers the next `play`). The overlay keeps its final
+     * figure. The session object stays so disconnect() can report it.
+     */
+    private _markSessionClosed;
+    /**
+     * Playback resumed after the session was closed: open a new session before
+     * a frame plays. FAIL CLOSED: the element is paused at once, the closed
+     * session's tracker, loop and handlers are torn down, attach() runs again
+     * (wallet and page token are held, so normally no prompt; the allowance is
+     * re-read, the backend re-checks funding and opens a fresh session), and
+     * playback resumes from where it was only when a session is open. A refusal
+     * is shown in the gate with the backend's words, and the retry runs this
+     * again.
+     */
+    private _reopenSession;
+    /**
+     * Play from `at` once the element can. On Tier 2 attach() has just set a
+     * fresh signed URL, which resets the position, so wait for its metadata
+     * and seek back before playing; on Tier 1 the source is untouched.
+     */
+    private _resumePlayback;
     disconnect(): Promise<SessionSummary>;
     getSession(): {
         id: string;

@@ -64,7 +64,7 @@ async function registerContent() {
   // }
 
   console.log(`\nEmbed in your page:`);
-  console.log(`<script src="https://cdn.jubjub.app/sdk.js"></script>`);
+  console.log(`<script src="https://jubjub-app.github.io/jubjub-sdk/dist/jubjub-sdk.umd.js"></script>`);
   console.log(`<script>JubJub.play('${result.content_id}', videoElement);</script>`);
 }
 
