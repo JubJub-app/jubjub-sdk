@@ -1,0 +1,23 @@
+# The hosted bundle must be the tested build. GitHub Pages serves main's root,
+# so stable/ and v/<version>/ are what every integrator loads; this check
+# refuses a push or pull request where they differ from dist/ for the version
+# in package.json (scripts/check-release.mjs), after the full test suite.
+name: Release check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: node scripts/check-release.mjs
