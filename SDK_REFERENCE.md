@@ -1,6 +1,6 @@
 # JubJub SDK Reference
 
-**Version:** 2.3.1
+**Version:** 2.3.2
 **Chain:** Base (Coinbase L2) — `network: 'mainnet'` → Base mainnet (default), `network: 'testnet'` → Base Sepolia
 **Status:** Live on Base mainnet. Omitting `network` means mainnet; pass `network: 'testnet'` to develop against Sepolia.
 
@@ -58,7 +58,7 @@ const { content_id } = await res.json();
 
 That's it. `stable/` moves only after a release has passed the full test
 suite. To pin a version, load
-`https://jubjub-app.github.io/jubjub-sdk/v/2.3.1/jubjub-sdk.umd.js` instead.
+`https://jubjub-app.github.io/jubjub-sdk/v/2.3.2/jubjub-sdk.umd.js` instead.
 The older `.../jubjub-sdk/dist/jubjub-sdk.umd.js` address is legacy (main's
 unpinned build output); it keeps working, but new integrations load `stable/`
 or `v/<version>/`.
@@ -87,7 +87,7 @@ or `v/<version>/`.
 
 | Recipient | Amount | Mechanism |
 |---|---|---|
-| JubJub | $0.03 (3%) | Extracted at router level |
+| JubJub | $0.03 (3%) | Taken by the creator pool when a crossing settles |
 | Content contract | $0.97 | On-chain transfer |
 | Catalogue | $0.97 | Auto-forwarded from content contract |
 | Creator A (70% brand token) | $0.679 | Proportional to brand token holdings |
@@ -186,10 +186,11 @@ Required: `media_url` and at least one of `creator_email` or `creator_wallet`.
 >
 > `payment_router` carries the **streaming spender**: the address the
 > viewer's USDC allowance is granted to and that the backend draws against
-> (`sdk_routes._streaming_spender`). On the current rail that is the creator
-> pool, not the payment router contract; the field name is historical. It is
-> the same address a 402 names as `spender`, so Step 3's approval and a 402's
-> request always point at one contract.
+> (`sdk_routes._streaming_spender`). That is the JubJubCreatorPool; the
+> field name is historical (it once named the JubJubPaymentRouter, whose rail
+> was retired on 2026-10-25). It is the same address a 402 names as
+> `spender`, so Step 3's approval and a 402's request always point at one
+> contract.
 
 ---
 
@@ -240,15 +241,15 @@ Catalogue Contract (one per team or solo creator)
      v
 Content Token (10,000 supply per video)
   Created per video. All held by catalogue.
-  Receives streaming revenue from PaymentRouter.
+  Receives streaming revenue from the creator pool.
   Auto-forwards to catalogue in the same transaction.
 ```
 
 ### Payment flow on-chain
 
 ```
-Viewer USDC
-  -> PaymentRouter.settle()
+Viewer USDC (a standing approval to the creator pool)
+  -> JubJubCreatorPool, a crossing pulls what was watched
     -> 3% to JubJub treasury
     -> 97% to Content Contract via notifyDistribution()
       -> auto-forward to Catalogue (same tx)
@@ -264,8 +265,8 @@ these addresses: the backend playback-info response supplies
 
 | Contract | Address (Base mainnet) |
 |---|---|
-| JubJubCreatorPool (the streaming spender on the current rail) | `0xD3b220ebd563d2309977f0442dD4746d4bAe3dC8` |
-| JubJubPaymentRouter | `0x8dcD41b8FaC4dD6dE3FD2e5A32962B3d93DbC9Da` |
+| JubJubCreatorPool (the streaming spender) | `0xD3b220ebd563d2309977f0442dD4746d4bAe3dC8` |
+| JubJubPaymentRouter (retired rail, 2026-10-25; still the content tokens' `router` role, never approved) | `0x8dcD41b8FaC4dD6dE3FD2e5A32962B3d93DbC9Da` |
 | MediaOwnershipFactoryV2 | `0xab217aa8428c24Dde73cf334aF650a290E52d81C` |
 | JubJubCatalogueFactory | `0xc5B533F9d2977d7e7Dc47dBE780BFA367E131e1B` |
 | JubJubPublishLedger | `0x3EC31c79a0b73FfA49f1868F5Ec6bd54D1588Aa6` |
@@ -424,6 +425,12 @@ dashboard's /watch and /embed behave identically.
   `dist/jubjub-sdk.umd.js` to `stable/` and `v/<version>/`; a GitHub Actions
   check on every push and pull request refuses a tree where they differ. Load
   `https://jubjub-app.github.io/jubjub-sdk/stable/jubjub-sdk.umd.js`.
+
+2.3.2 (docs, 2026-10-25). The JubJubPaymentRouter rail is retired on the
+backend (Tom, 2026-10-25); the creator pool is the one streaming spender, and
+the comments and this document say so. `payment_router` keeps its name and
+carries the pool, as it has since the hub cutover. No code path changed:
+nothing about pricing, approvals, caps or metering is different.
 
 2.3.1 (fix, 2026-10-25). The declarative play harness (`data-jubjub-*`
 videos) never resumes a paid video before the SDK is armed. An `error` before
@@ -587,7 +594,7 @@ the root of `main`, so three addresses exist:
 | Address | What it is |
 |---|---|
 | `https://jubjub-app.github.io/jubjub-sdk/stable/jubjub-sdk.umd.js` | The release to load. Moves only after `npm run release` has passed the full test suite. |
-| `https://jubjub-app.github.io/jubjub-sdk/v/2.3.1/jubjub-sdk.umd.js` | That release, pinned. One folder per version. |
+| `https://jubjub-app.github.io/jubjub-sdk/v/2.3.2/jubjub-sdk.umd.js` | That release, pinned. One folder per version. |
 | `https://jubjub-app.github.io/jubjub-sdk/dist/jubjub-sdk.umd.js` | Legacy: main's build output, unpinned. Kept working. |
 
 `npm run release` runs the tests, builds, and copies `dist/jubjub-sdk.umd.js`

@@ -12,7 +12,7 @@ That is the stable address: it moves only after a release has passed the full
 test suite. To pin a version instead:
 
 ```html
-<script src="https://jubjub-app.github.io/jubjub-sdk/v/2.3.1/jubjub-sdk.umd.js"></script>
+<script src="https://jubjub-app.github.io/jubjub-sdk/v/2.3.2/jubjub-sdk.umd.js"></script>
 ```
 
 (The older `.../jubjub-sdk/dist/jubjub-sdk.umd.js` address is legacy: it is
@@ -267,7 +267,7 @@ for the chain the content lives on:
 | Field | What it is |
 |---|---|
 | `usdc_address` | The USDC token the viewer approves and is charged in |
-| `payment_router` | The streaming spender: the address the viewer's USDC allowance is granted to. This is the address the backend draws against for streaming (the creator pool on the current rail), and the same address a 402 names as `spender` |
+| `payment_router` | The streaming spender: the address the viewer's USDC allowance is granted to. This is the address the backend draws against for streaming (the JubJubCreatorPool; the field name is historical), and the same address a 402 names as `spender` |
 | `chain_id` | `8453` on mainnet, `84532` on Base Sepolia |
 
 ## Allowance

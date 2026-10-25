@@ -57,9 +57,9 @@ export declare function fundingMessage(err: FundingRequiredError | FundingUnveri
 /**
  * 402: the viewer cannot fund streaming. `spender` is the address the USDC
  * allowance must be granted to: the streaming spender the backend draws
- * against. On the hub rail (POOL_STREAMING_SOURCE on, production since
- * 2026-10) that is the creator pool; on the router rail it is the payment
- * router. It is the SAME address playback-info serves as `payment_router`
+ * against: the JubJubCreatorPool (the hub rail, the only rail since the
+ * JubJubPaymentRouter rail was retired on 2026-10-25). It is the SAME
+ * address playback-info serves as `payment_router`
  * (backend sdk_routes._streaming_spender), so Step 4's approval and a 402's
  * spender name one contract, never two. Amounts are micro-USDC; null when
  * the backend did not send one.
