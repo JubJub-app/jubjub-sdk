@@ -11,6 +11,7 @@
  */
 
 import type { SegmentResponse } from './types';
+import { isCardEndReason } from './core/Card';
 
 /** The two media-element facts the hidden-tab decision needs. */
 export interface MediaPlayState {
@@ -66,6 +67,11 @@ export const CAP_REACHED = 'cap_reached';
 export function segmentOutcome(resp: SegmentResponse | null | undefined): SegmentOutcome {
   if (!resp || typeof resp !== 'object') return 'continue';
   const status = typeof resp.status === 'string' ? resp.status.trim().toLowerCase() : '';
+  // 2.4.1: a card session the backend ended for its card (card_empty,
+  // card_frozen, ...) is over even when the close is still settling and the
+  // status reads "active": playback must not run on against it. Hub
+  // sessions never carry a card_* reason, so their answers read as before.
+  if (isCardEndReason(resp.end_reason)) return 'closed';
   // No status at all (a backend that predates the field) reads as active:
   // before 2.2.0 the body was not read, and the segment was accepted (200).
   if (status === '' || status === 'active') return 'continue';
