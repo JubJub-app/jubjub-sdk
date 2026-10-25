@@ -811,10 +811,11 @@ export class JubJub extends EventEmitter {
             );
           }
           // Decide exactly once. 'ready' → play (payment secured). Any
-          // pre-payment failure emits 'payment:required' → GATE. A benign
-          // post-payment 'error' (after the on-chain session exists) →
-          // resume. The 15s safety timeout means setup never confirmed →
-          // GATE (can't confirm payment).
+          // pre-payment failure emits 'payment:required' → GATE. An 'error'
+          // resumes ONLY when a session is already open (a benign
+          // post-payment hiccup); an 'error' before the SDK is armed is a
+          // refusal → GATE, never free playback. The 15s safety timeout
+          // means setup never confirmed → GATE (can't confirm payment).
           await new Promise<void>((resolve) => {
             let settled = false;
             const done = (g: boolean) => {
@@ -831,7 +832,7 @@ export class JubJub extends EventEmitter {
               if (!settled) gatedBySdk = true;
               done(true);
             });
-            sdk!.on('error', () => done(false));
+            sdk!.on('error', () => done(!sdk!._isArmed()));
             setTimeout(() => {
               gateTitle = 'Payment setup timed out';
               gateSub = 'Setting up payment took too long. Please try again.';
@@ -843,6 +844,13 @@ export class JubJub extends EventEmitter {
           gated = true;
         }
         loader.remove();
+
+        // Whatever settled the wait, play() runs only on an open session.
+        if (!gated && !sdk?._isArmed()) {
+          gated = true;
+          gateTitle = gateTitle || 'Payment not set up';
+          gateSub = gateSub || "We couldn't set up payment for this video. Please try again.";
+        }
 
         if (gated) {
           // FAIL CLOSED: payment was not secured. Keep the video paused, show
@@ -1142,6 +1150,14 @@ export class JubJub extends EventEmitter {
    * may start. Once per attach(); a no-op without an open session, so it can
    * never tell a host to attach a source nothing was paid for.
    */
+  /**
+   * True only while a streaming session is open: what the play harness
+   * requires before it may call video.play() on a paid piece.
+   */
+  _isArmed(): boolean {
+    return !!this.session && !this.sessionClosed;
+  }
+
   private _dispatchArmed(): void {
     if (this.armedDispatched || !this.session || this.sessionClosed) return;
     const contentId = this.attachedContentId;

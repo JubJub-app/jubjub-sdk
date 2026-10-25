@@ -1,6 +1,6 @@
 # JubJub SDK Reference
 
-**Version:** 2.3.0
+**Version:** 2.3.1
 **Chain:** Base (Coinbase L2) — `network: 'mainnet'` → Base mainnet (default), `network: 'testnet'` → Base Sepolia
 **Status:** Live on Base mainnet. Omitting `network` means mainnet; pass `network: 'testnet'` to develop against Sepolia.
 
@@ -58,7 +58,7 @@ const { content_id } = await res.json();
 
 That's it. `stable/` moves only after a release has passed the full test
 suite. To pin a version, load
-`https://jubjub-app.github.io/jubjub-sdk/v/2.3.0/jubjub-sdk.umd.js` instead.
+`https://jubjub-app.github.io/jubjub-sdk/v/2.3.1/jubjub-sdk.umd.js` instead.
 The older `.../jubjub-sdk/dist/jubjub-sdk.umd.js` address is legacy (main's
 unpinned build output); it keeps working, but new integrations load `stable/`
 or `v/<version>/`.
@@ -425,6 +425,14 @@ dashboard's /watch and /embed behave identically.
   check on every push and pull request refuses a tree where they differ. Load
   `https://jubjub-app.github.io/jubjub-sdk/stable/jubjub-sdk.umd.js`.
 
+2.3.1 (fix, 2026-10-25). The declarative play harness (`data-jubjub-*`
+videos) never resumes a paid video before the SDK is armed. An `error` before
+a session is open used to be read as a benign hiccup and resumed playback with
+nothing paid for, so a host that left the source on the element played it
+free. It now gates, on the first try and on every retry; `video.play()` runs
+only while a session is open (`_isArmed()`). Nothing about pricing,
+approvals, caps or metering changed.
+
 2.3.0 (element events, 2026-10-25). The SDK dispatches `jubjub:armed` and
 `jubjub:gated` on the `<video>` element, so JubJub's own players (and any
 declarative host) can keep a paid Tier 1 piece's URL off the element until
@@ -579,7 +587,7 @@ the root of `main`, so three addresses exist:
 | Address | What it is |
 |---|---|
 | `https://jubjub-app.github.io/jubjub-sdk/stable/jubjub-sdk.umd.js` | The release to load. Moves only after `npm run release` has passed the full test suite. |
-| `https://jubjub-app.github.io/jubjub-sdk/v/2.3.0/jubjub-sdk.umd.js` | That release, pinned. One folder per version. |
+| `https://jubjub-app.github.io/jubjub-sdk/v/2.3.1/jubjub-sdk.umd.js` | That release, pinned. One folder per version. |
 | `https://jubjub-app.github.io/jubjub-sdk/dist/jubjub-sdk.umd.js` | Legacy: main's build output, unpinned. Kept working. |
 
 `npm run release` runs the tests, builds, and copies `dist/jubjub-sdk.umd.js`

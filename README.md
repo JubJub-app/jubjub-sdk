@@ -12,7 +12,7 @@ That is the stable address: it moves only after a release has passed the full
 test suite. To pin a version instead:
 
 ```html
-<script src="https://jubjub-app.github.io/jubjub-sdk/v/2.3.0/jubjub-sdk.umd.js"></script>
+<script src="https://jubjub-app.github.io/jubjub-sdk/v/2.3.1/jubjub-sdk.umd.js"></script>
 ```
 
 (The older `.../jubjub-sdk/dist/jubjub-sdk.umd.js` address is legacy: it is
