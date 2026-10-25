@@ -70,9 +70,10 @@ export class Approval {
   // The streaming spender: the address the viewer's USDC allowance is
   // granted to and read against. It is playback-info's `payment_router`
   // field, which the backend fills from sdk_routes._streaming_spender(): the
-  // creator pool on the hub rail (POOL_STREAMING_SOURCE on, production), the
-  // payment router on the router rail. The same helper feeds the backend's
-  // 402 `spender`, so Step 4 and a 402 always name one contract.
+  // JubJubCreatorPool (the hub rail, the only rail since the
+  // JubJubPaymentRouter rail was retired on 2026-10-25; the field name is
+  // historical). The same helper feeds the backend's 402 `spender`, so Step 4
+  // and a 402 always name one contract.
   private spender: Address;
   private chain: SdkChain;
   // The amount approved when an approve is needed (the standing allowance).

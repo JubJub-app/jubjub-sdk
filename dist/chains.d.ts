@@ -8,8 +8,8 @@ import { base, baseSepolia } from 'viem/chains';
  *
  * The public surface keeps the `network: 'testnet' | 'mainnet'` flag
  * (see types.ts). Internally we map that flag to a chain key and resolve
- * the concrete config below. Contract addresses (USDC, payment router)
- * are deliberately NOT here — they come from the backend playback-info
+ * the concrete config below. Contract addresses (USDC, the streaming
+ * spender) are deliberately NOT here — they come from the backend playback-info
  * response per content, which is the authoritative source.
  */
 export type NetworkFlag = 'testnet' | 'mainnet';

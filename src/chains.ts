@@ -9,8 +9,8 @@ import { base, baseSepolia } from 'viem/chains';
  *
  * The public surface keeps the `network: 'testnet' | 'mainnet'` flag
  * (see types.ts). Internally we map that flag to a chain key and resolve
- * the concrete config below. Contract addresses (USDC, payment router)
- * are deliberately NOT here — they come from the backend playback-info
+ * the concrete config below. Contract addresses (USDC, the streaming
+ * spender) are deliberately NOT here — they come from the backend playback-info
  * response per content, which is the authoritative source.
  */
 
@@ -70,7 +70,7 @@ export function chainForNetwork(network: NetworkFlag): SdkChain {
  * The backend playback-info `chain_id` is the single source of truth for
  * which chain a piece of content lives on. Resolving the RPC + viem chain
  * from this same value (rather than from the SDK network flag) guarantees
- * the RPC can never diverge from the USDC/router addresses, which also
+ * the RPC can never diverge from the USDC and spender addresses, which also
  * travel in the playback-info response.
  */
 const CHAIN_BY_ID: Record<number, SdkChain> = {

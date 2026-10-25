@@ -131,7 +131,7 @@ let _sessionToken: string | null = null;
  * Set when the backend answered 402 insufficient_allowance: the NEXT attempt's
  * approval step (the gate's retry, or the host calling play again) approves
  * this spender -- the one the backend named, never a hard-coded address -- in
- * the same wallet flow as the router approval. Cleared once approved.
+ * the same wallet flow as the standing approval. Cleared once approved.
  */
 let _pendingSpenderApproval:
   | {
