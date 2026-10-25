@@ -239,3 +239,49 @@ test('the payload matches the backend byte for byte', () => {
     'jubjub-remembered-sign-in\nresume\nrs_abc\n0xabc\nbankrtv.app\n1700000000123',
   );
 });
+
+// ---------------------------------------------------------------------------
+// A card mint or top-up signs the viewer in (Tom, 2026-10-25)
+// ---------------------------------------------------------------------------
+
+import { redeemSignIn, takeSignInCode } from '../src/rememberedSignIn';
+
+const CODE = 'sic_AbCdEfGh12345678';
+
+test('back from the card page: the code is taken from the fragment and removed from the address bar', () => {
+  const replaced: string[] = [];
+  const hist = { replaceState: (_d: unknown, _u: string, url?: string) => { replaced.push(url ?? ''); } };
+  const code = takeSignInCode({ hash: `#jubjub_sign_in=${CODE}&t=12`, pathname: '/watch/x', search: '?a=1' }, hist);
+  assert.equal(code, CODE);
+  assert.deepEqual(replaced, ['/watch/x?a=1#t=12']);
+  assert.equal(takeSignInCode({ hash: '', pathname: '/', search: '' }, hist), null);
+  assert.equal(takeSignInCode({ hash: '#jubjub_sign_in=<script>', pathname: '/', search: '' }, hist), null);
+});
+
+test('someone who just minted is signed in with no signature, and remembered here', async () => {
+  const store = memoryStore();
+  const key = (await createDeviceKey())!;
+  const calls: any[] = [];
+  const fetch = async (url: string, init?: any) => {
+    calls.push({ url, body: JSON.parse(init.body) });
+    return { ok: true, status: 200, json: async () => ({
+      session_token: 'jj_minted', profile_id: 'prof_1',
+      remembered_session_id: 'rs_card', remembered_until: new Date(Date.now() + 30 * DAY).toISOString(),
+    }) };
+  };
+  const w = wallet('base');
+  const out = await redeemSignIn(CODE, WALLET, key, { apiUrl: API, host: SITE, store, fetch });
+  assert.equal(out!.sessionToken, 'jj_minted');
+  assert.deepEqual(w.calls, []); // no wallet prompt at all
+  assert.equal(calls[0].url, `${API}/v2/public/viewer-session/redeem`);
+  assert.equal(calls[0].body.sign_in_code, CODE);
+  assert.deepEqual(Object.keys(calls[0].body.device_public_key).sort(), ['crv', 'kty', 'x', 'y']);
+  assert.equal(store.record!.sessionId, 'rs_card'); // the next visit resumes
+});
+
+test('a refused code (another wallet, used, expired) falls back to signing', async () => {
+  const store = memoryStore();
+  const refused = async () => ({ ok: false, status: 401, json: async () => ({}) });
+  assert.equal(await redeemSignIn(CODE, OTHER, null, { apiUrl: API, host: SITE, store, fetch: refused }), null);
+  assert.equal(store.record, null);
+});

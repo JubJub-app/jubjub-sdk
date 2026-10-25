@@ -57,3 +57,11 @@ test('rememberSignIn: false turns remembering off', () => {
   assert.match(step3, /if \(_initRememberSignIn\) \{\s*const resumed/);
   assert.match(step3, /_initRememberSignIn \? await createDeviceKey\(\) : null/);
 });
+
+test('back from minting a card: Step 3 redeems the code before any signature, once', () => {
+  const step3 = section('private async _mintViewerToken', 'private _forgetSessionToken');
+  const redeem = step3.indexOf('redeemSignIn(code, address');
+  assert.ok(redeem > step3.indexOf('resumeSignIn(address') && redeem < step3.indexOf('this.api.createViewerSession('));
+  assert.match(step3, /const code = _pendingSignInCode;\s*_pendingSignInCode = null;/);
+  assert.match(src, /_pendingSignInCode = _pendingSignInCode \?\? takeSignInCode\(\)/);
+});

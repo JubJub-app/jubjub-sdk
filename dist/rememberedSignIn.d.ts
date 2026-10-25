@@ -98,3 +98,27 @@ export declare function rememberSignIn(key: DeviceKey, wallet: string, remembere
  * backend row when it answers (signed by the same key, best effort).
  */
 export declare function forgetSignIn(deps: RememberDeps, reason?: string): Promise<void>;
+/** The URL fragment key the card page returns a one-time sign-in code in. */
+export declare const SIGN_IN_FRAGMENT = "jubjub_sign_in";
+type LocationLike = {
+    hash: string;
+    pathname: string;
+    search: string;
+};
+type HistoryLike = {
+    replaceState(data: unknown, unused: string, url?: string): void;
+};
+/**
+ * Take the one-time code out of the page URL's fragment (`#jubjub_sign_in=`)
+ * and remove it from the address bar, so it is neither reused nor shared by
+ * a copied link. Null when there is none. Never throws.
+ */
+export declare function takeSignInCode(loc?: LocationLike | undefined, hist?: HistoryLike | undefined): string | null;
+/**
+ * Redeem a card mint's one-time code for `wallet` on this site: a viewer
+ * token with no signature, remembered here for 30 days with `key`. Null when
+ * the backend refuses it (another wallet, expired, used): the viewer signs
+ * as usual. Never throws.
+ */
+export declare function redeemSignIn(code: string, wallet: string, key: DeviceKey | null, deps: RememberDeps): Promise<Resumed | null>;
+export {};

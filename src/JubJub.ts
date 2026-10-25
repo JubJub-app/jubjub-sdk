@@ -12,7 +12,9 @@ import {
   forgetSignIn,
   rememberSignIn,
   rememberedWallet,
+  redeemSignIn,
   resumeSignIn,
+  takeSignInCode,
 } from './rememberedSignIn';
 import { connectAndSignIn, mayConnectAndSignIn, type WalletBuiltProof } from './walletConnectSignIn';
 import {
@@ -171,6 +173,13 @@ let _pendingProof: WalletBuiltProof | null = null;
 
 /** init({ rememberSignIn: false }) turns the 30-day remembered sign-in off. */
 let _initRememberSignIn = true;
+
+/**
+ * A card mint or top-up's one-time sign-in code (Tom, 2026-10-25), taken from
+ * this page's URL fragment at init (`#jubjub_sign_in=`, rememberedSignIn.ts).
+ * Step 3 redeems it once, for the connected wallet, instead of a signature.
+ */
+let _pendingSignInCode: string | null = null;
 
 /** Providers whose accountsChanged this page already listens to. */
 const _watchedProviders = new WeakSet<object>();
@@ -591,6 +600,9 @@ export class JubJub extends EventEmitter {
     if (config.rememberSignIn === false) {
       _initRememberSignIn = false;
     }
+    // Back from the card page after a mint or top-up: its code signs the
+    // viewer in at Step 3. Taken (and removed from the address bar) once.
+    _pendingSignInCode = _pendingSignInCode ?? takeSignInCode();
 
     if (_initialized) {
       console.log('[JubJub] Already initialized — skipping');
@@ -1314,6 +1326,23 @@ export class JubJub extends EventEmitter {
       _sessionToken = resumed.sessionToken;
       _pendingProof = null;
       console.log('[JubJub] Step 3: remembered sign-in resumed, no signature needed');
+      return true;
+    }
+  }
+
+  // Back from minting or topping up a card: the relayed mint's signature
+  // already proved this wallet, and the card page handed back a one-time
+  // code. Redeem it (single use: cleared whatever the answer).
+  if (_pendingSignInCode) {
+    const code = _pendingSignInCode;
+    _pendingSignInCode = null;
+    const key = _initRememberSignIn ? await createDeviceKey() : null;
+    const redeemed = await redeemSignIn(code, address, key, _rememberDeps(apiUrl));
+    if (redeemed) {
+      this.api.setSessionToken(redeemed.sessionToken);
+      _sessionToken = redeemed.sessionToken;
+      _pendingProof = null;
+      console.log('[JubJub] Step 3: signed in by the card mint, no signature needed');
       return true;
     }
   }

@@ -329,6 +329,13 @@ A viewer is asked to prove their wallet once per site, not once per page:
   site's IndexedDB; the backend stored only its public half against the
   wallet and this site. A returning play signs a fresh timestamp with it
   (`POST /v2/public/viewer-session/resume`) and gets a viewer token.
+- **Just minted or topped up a card.** No signature at all: the relayed
+  mint's signature proved the wallet, and the card page's "Back to the video"
+  link carries a one-time code (`#jubjub_sign_in=`, taken off the address
+  bar at `init()`). Step 3 redeems it for the connected wallet
+  (`POST /v2/public/viewer-session/redeem`) and the sign-in is remembered
+  here for 30 days. A refused code (another wallet, used, expired) just
+  means the usual sign-in.
 - **Asked again** after 30 days, when the viewer switches wallet or
   disconnects the site in the wallet (`accountsChanged`), after
   `JubJub.resetWallet()`, or when the site's data is cleared. Each of these

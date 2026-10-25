@@ -310,3 +310,72 @@ export async function forgetSignIn(deps: RememberDeps, reason = 'viewer'): Promi
     /* the local key is gone; the row expires on its own */
   }
 }
+
+// ---------------------------------------------------------------------------
+// A card mint or top-up signs the viewer in (Tom, 2026-10-25)
+// ---------------------------------------------------------------------------
+
+/** The URL fragment key the card page returns a one-time sign-in code in. */
+export const SIGN_IN_FRAGMENT = 'jubjub_sign_in';
+
+type LocationLike = { hash: string; pathname: string; search: string };
+type HistoryLike = { replaceState(data: unknown, unused: string, url?: string): void };
+
+/**
+ * Take the one-time code out of the page URL's fragment (`#jubjub_sign_in=`)
+ * and remove it from the address bar, so it is neither reused nor shared by
+ * a copied link. Null when there is none. Never throws.
+ */
+export function takeSignInCode(
+  loc: LocationLike | undefined = typeof location !== 'undefined' ? location : undefined,
+  hist: HistoryLike | undefined = typeof history !== 'undefined' ? history : undefined,
+): string | null {
+  try {
+    if (!loc || !loc.hash) return null;
+    const params = new URLSearchParams(loc.hash.replace(/^#/, ''));
+    const code = params.get(SIGN_IN_FRAGMENT);
+    if (!code || !/^sic_[A-Za-z0-9_-]{8,60}$/.test(code)) return null;
+    params.delete(SIGN_IN_FRAGMENT);
+    const rest = params.toString();
+    hist?.replaceState(null, '', `${loc.pathname}${loc.search}${rest ? `#${rest}` : ''}`);
+    return code;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Redeem a card mint's one-time code for `wallet` on this site: a viewer
+ * token with no signature, remembered here for 30 days with `key`. Null when
+ * the backend refuses it (another wallet, expired, used): the viewer signs
+ * as usual. Never throws.
+ */
+export async function redeemSignIn(
+  code: string,
+  wallet: string,
+  key: DeviceKey | null,
+  deps: RememberDeps,
+): Promise<Resumed | null> {
+  const doFetch = deps.fetch ?? ((u: string, i?: any) => fetch(u, i));
+  try {
+    const res = await doFetch(`${deps.apiUrl}/v2/public/viewer-session/redeem`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sign_in_code: code,
+        wallet_address: wallet.toLowerCase(),
+        ...(key ? { device_public_key: key.publicJwk } : {}),
+      }),
+    });
+    if (!res.ok) {
+      (deps.log ?? (() => {}))(`[JubJub] Card sign-in code refused (${res.status}); signing in the usual way`);
+      return null;
+    }
+    const data = await res.json();
+    if (!data?.session_token) return null;
+    if (key) await rememberSignIn(key, wallet, data, { store: deps.store });
+    return { sessionToken: data.session_token, profileId: data.profile_id, wallet: wallet.toLowerCase() };
+  } catch {
+    return null;
+  }
+}
