@@ -8,6 +8,14 @@ import {
 } from './walletErrors';
 import { reconfirmAuthorisedAccount, requestAuthorisedAccount } from './walletAuthorise';
 import {
+  createDeviceKey,
+  forgetSignIn,
+  rememberSignIn,
+  rememberedWallet,
+  resumeSignIn,
+} from './rememberedSignIn';
+import { connectAndSignIn, mayConnectAndSignIn, type WalletBuiltProof } from './walletConnectSignIn';
+import {
   candidateProviders,
   describeProvider,
   selectProvider,
@@ -152,6 +160,25 @@ let _initWalletRdns: string | null = null;
  * not. Cleared when a streaming call rejects it, so the next play re-proves.
  */
 let _sessionToken: string | null = null;
+
+/**
+ * 2.5.0: a sign-in the wallet made inside the connect prompt (wallet_connect
+ * + signInWithEthereum, walletConnectSignIn.ts). Step 3 posts it instead of
+ * asking for a second signature. Single use (its nonce is), cleared once
+ * spent or when the wallet is reset.
+ */
+let _pendingProof: WalletBuiltProof | null = null;
+
+/** init({ rememberSignIn: false }) turns the 30-day remembered sign-in off. */
+let _initRememberSignIn = true;
+
+/** Providers whose accountsChanged this page already listens to. */
+const _watchedProviders = new WeakSet<object>();
+
+/** Where the remembered sign-in talks to and which site it belongs to. */
+function _rememberDeps(apiUrl: string = _initApiUrl) {
+  return { apiUrl, host: _pageHost(), log: (m: string, ...d: unknown[]) => console.info(m, ...d) };
+}
 
 /**
  * Set when the backend answered 402 insufficient_allowance: the NEXT attempt's
@@ -561,6 +588,9 @@ export class JubJub extends EventEmitter {
     if (typeof config.onSelectCard === 'function') {
       _initOnSelectCard = config.onSelectCard;
     }
+    if (config.rememberSignIn === false) {
+      _initRememberSignIn = false;
+    }
 
     if (_initialized) {
       console.log('[JubJub] Already initialized — skipping');
@@ -608,11 +638,16 @@ export class JubJub extends EventEmitter {
    * connector, e.g. injected → WalletConnect) or the user disconnects: the
    * SDK caches the first wallet it connected for the life of the page and
    * would otherwise keep signing with it.
+   *
+   * 2.5.0: also forgets this site's remembered sign-in (here and on the
+   * backend), so a disconnect or a wallet switch asks again.
    */
   static resetWallet(): void {
     _sharedWallet = null;
     _sharedProvider = null;
     _walletConnecting = null;
+    _pendingProof = null;
+    void forgetSignIn(_rememberDeps(), 'reset_wallet');
   }
 
   static async search(params: SearchParams = {}): Promise<SearchResponse> {
@@ -664,6 +699,28 @@ export class JubJub extends EventEmitter {
    * to the value passed to JubJub.init(), i.e. 'mainnet' unless the
    * consumer explicitly opted into 'testnet').
    */
+  /**
+   * 2.5.0: a wallet switch or a disconnect in the wallet forgets this site's
+   * remembered sign-in and the page's token, so the next play asks again.
+   * Once per provider.
+   */
+  private static _watchAccounts(provider: any): void {
+    if (!provider || typeof provider.on !== 'function' || _watchedProviders.has(provider)) return;
+    _watchedProviders.add(provider);
+    try {
+      provider.on('accountsChanged', (accounts: unknown) => {
+        const next = Array.isArray(accounts) && typeof accounts[0] === 'string' ? accounts[0].toLowerCase() : null;
+        const current = (_sharedWallet as any)?.account?.address?.toLowerCase?.() ?? null;
+        if (next && next === current) return;
+        console.info('[JubJub] Wallet changed or disconnected; the next play asks again');
+        _sessionToken = null;
+        JubJub.resetWallet();
+      });
+    } catch {
+      /* a provider without events: Step 3's wallet check still catches a switch */
+    }
+  }
+
   static async connectBrowserWallet(network: NetworkFlag = _initNetwork): Promise<WalletLike> {
     const ethereum = await JubJub._selectWalletProvider();
     if (!ethereum) {
@@ -675,6 +732,19 @@ export class JubJub extends EventEmitter {
     }
 
     const chain = chainForNetwork(network);
+
+    // 0 (2.5.0). Sign-in folded into connect: a wallet that can connect and
+    //    sign in with ONE prompt (wallet_connect + signInWithEthereum) does
+    //    so here, and Step 3 posts that proof with no second prompt. Only for
+    //    a first visit (nothing remembered on this site) and only on wallets
+    //    that identify as able (mayConnectAndSignIn). A decline is a decline
+    //    (it throws); "not supported" falls through to the usual connect.
+    _pendingProof = null;
+    if (_initRememberSignIn && mayConnectAndSignIn(ethereum) && !(await rememberedWallet({}))) {
+      _pendingProof = await connectAndSignIn(ethereum, _initApiUrl, {
+        log: (m, ...d) => console.warn(m, ...d),
+      });
+    }
 
     // 1 + 2. Connect, then CONFIRM this origin is authorised for the account
     //    (eth_accounts is the check, never the source). A wallet with a stale
@@ -749,6 +819,12 @@ export class JubJub extends EventEmitter {
       chain: chain.viemChain,
       transport: custom(ethereum),
     });
+
+    // A proof for a different account than the one now authorised is no use.
+    if (_pendingProof && _pendingProof.address.toLowerCase() !== address.toLowerCase()) {
+      _pendingProof = null;
+    }
+    JubJub._watchAccounts(ethereum);
 
     _sharedWallet = client as unknown as WalletLike;
     _sharedProvider = ethereum;
@@ -1226,15 +1302,46 @@ export class JubJub extends EventEmitter {
     return false;
   }
 
+  // 2.5.0: a returning viewer. This site remembers a sign-in for this
+  // wallet (rememberedSignIn.ts): resume it with the device key, no wallet
+  // prompt. Another wallet's record is forgotten (a switch asks again); a
+  // refused or expired one is dropped; any failure falls through to signing.
+  const apiUrl = this.options.apiUrl ?? _initApiUrl;
+  if (_initRememberSignIn) {
+    const resumed = await resumeSignIn(address, _rememberDeps(apiUrl));
+    if (resumed) {
+      this.api.setSessionToken(resumed.sessionToken);
+      _sessionToken = resumed.sessionToken;
+      _pendingProof = null;
+      console.log('[JubJub] Step 3: remembered sign-in resumed, no signature needed');
+      return true;
+    }
+  }
+
+  // The proof the wallet made in the connect prompt, if any (one prompt in
+  // all); else the usual signature. Either way, with a device key the
+  // backend remembers this sign-in on this site for 30 days.
+  const proof =
+    _pendingProof && _pendingProof.address.toLowerCase() === address.toLowerCase() ? _pendingProof : null;
+  _pendingProof = null;
+  const deviceKey = _initRememberSignIn ? await createDeviceKey() : null;
+
   try {
-    const minted = await this.api.createViewerSession(contentId, address, (message) =>
-      // Tag signer failures so they are never mistaken for a backend one.
-      this.wallet.signMessage(message).catch((e) => {
-        throw markWalletError(e);
-      }),
+    const minted = await this.api.createViewerSession(
+      contentId,
+      address,
+      (message) =>
+        // Tag signer failures so they are never mistaken for a backend one.
+        this.wallet.signMessage(message).catch((e) => {
+          throw markWalletError(e);
+        }),
+      { proof, devicePublicKey: deviceKey?.publicJwk ?? null },
     );
     // Share it with every later video on this page.
     _sessionToken = minted.sessionToken;
+    if (deviceKey && (await rememberSignIn(deviceKey, address, minted, {}))) {
+      console.log('[JubJub] Step 3: sign-in remembered on this site');
+    }
   } catch (viewerErr) {
     // The wallet refused or failed to sign: the viewer's to fix, said
     // plainly (declined, not authorised for this site, prompt pending).

@@ -28,6 +28,16 @@ export interface JubJubInitConfig extends CardPaymentConfig {
   apiUrl?: string;
   network?: 'testnet' | 'mainnet';
   /**
+   * 2.5.0, default true. A viewer who proves their wallet on this site is
+   * not asked to sign again here for 30 days: the SDK keeps a
+   * non-extractable device key in this site's IndexedDB and the backend
+   * remembers the sign-in for this site and wallet. A wallet switch or
+   * disconnect (or JubJub.resetWallet()) forgets it. Where the wallet
+   * supports it (Coinbase / Base), connecting and signing in are one prompt.
+   * false: sign each page visit, as before 2.5.0.
+   */
+  rememberSignIn?: boolean;
+  /**
    * Optional EIP-1193 compatible provider. When supplied, it is used
    * instead of `window.ethereum` for all wallet operations — required
    * inside a Farcaster Mini App (pass `sdk.wallet.getEthereumProvider()`)

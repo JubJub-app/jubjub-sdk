@@ -312,7 +312,34 @@ JubJub.setSessionToken('jj_...');
 ```
 
 The SDK never persists the token. If the backend refuses it (expired, revoked)
-the SDK forgets it and the next play proves the wallet again.
+the SDK forgets it and the next play resumes the remembered sign-in (2.5.0) or
+proves the wallet again.
+
+### Remembered sign-in, 30 days per site (2.5.0)
+
+A viewer is asked to prove their wallet once per site, not once per page:
+
+- **First visit.** On a wallet that supports it (Coinbase Wallet, Base
+  Account), connecting and signing in are one prompt (`wallet_connect` with
+  `signInWithEthereum`). Any other wallet: connect, then the sign-in
+  signature straight after, in the same step. A card holder then watches; an
+  approve-and-pull viewer approves USDC once, as before.
+- **Later visits within 30 days.** No prompt. At sign-in the SDK made a P-256
+  key with WebCrypto (private half non-extractable) and kept it in this
+  site's IndexedDB; the backend stored only its public half against the
+  wallet and this site. A returning play signs a fresh timestamp with it
+  (`POST /v2/public/viewer-session/resume`) and gets a viewer token.
+- **Asked again** after 30 days, when the viewer switches wallet or
+  disconnects the site in the wallet (`accountsChanged`), after
+  `JubJub.resetWallet()`, or when the site's data is cleared. Each of these
+  forgets the key here and on the backend.
+- The token itself is never stored. The remembered sign-in only works on the
+  site that made it: IndexedDB is per origin, and the backend refuses a
+  resume whose Origin differs. What a token can spend is unchanged: a card is
+  held by its per-card debit allowance and the holder's freeze, a wallet by
+  its USDC approval.
+- `JubJub.init({ rememberSignIn: false })` turns it off (sign each visit). A
+  host that passes its own `sessionToken` skips all of this, as before.
 
 ### Switching wallet providers
 

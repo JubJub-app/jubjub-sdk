@@ -95,6 +95,9 @@ export declare class JubJub extends EventEmitter {
      * connector, e.g. injected → WalletConnect) or the user disconnects: the
      * SDK caches the first wallet it connected for the life of the page and
      * would otherwise keep signing with it.
+     *
+     * 2.5.0: also forgets this site's remembered sign-in (here and on the
+     * backend), so a disconnect or a wallet switch asks again.
      */
     static resetWallet(): void;
     static search(params?: SearchParams): Promise<SearchResponse>;
@@ -106,6 +109,12 @@ export declare class JubJub extends EventEmitter {
      * to the value passed to JubJub.init(), i.e. 'mainnet' unless the
      * consumer explicitly opted into 'testnet').
      */
+    /**
+     * 2.5.0: a wallet switch or a disconnect in the wallet forgets this site's
+     * remembered sign-in and the page's token, so the next play asks again.
+     * Once per provider.
+     */
+    private static _watchAccounts;
     static connectBrowserWallet(network?: NetworkFlag): Promise<WalletLike>;
     /**
      * The EIP-1193 provider for this page (see walletProviders.ts): the host's
