@@ -15,6 +15,13 @@
  *                   "chain_id"}}
  *   503 {"detail": {"reason": "funding_unverifiable", "message"}}
  *
+ * A card session (2.4.0, body card_token_id) answers instead:
+ *   402 {"detail": {"reason": "card_balance_low" | "card_frozen" | "card_closing"
+ *                   | "card_transferred" | "card_not_found", "message",
+ *                   "token_id", "required_micro", "balance_micro", "top_up_url"}}
+ * card_balance_low is the "Top up your card" prompt; the others show the
+ * backend's message. None of them is ever an approval.
+ *
  * tab_unpaid (session open, and a session the backend ended mid-play): the
  * wallet owes for earlier viewing, so allowance AND balance must cover the
  * tab plus the floor. required_micro is that total, and it is exactly what
@@ -43,11 +50,45 @@ export type FundingRequiredReason =
   | 'insufficient_balance'
   | 'tab_unpaid'
   /**
+   * Card sessions (2.4.0, card-rail-api.md). card_balance_low: the card covers
+   * less than one minute; the gate is "Top up your card". The others stop
+   * with the backend's message: card_frozen, card_closing (burn requested),
+   * card_transferred (the wallet no longer holds it), card_not_found.
+   */
+  | CardRefusalReason
+  /**
    * Forward compatibility: a 402 whose reason this bundle does not know.
    * The backend's reason string is kept in `backendReason` and its message
    * is the error message; the gate shows those words. Never an approval.
    */
   | 'unknown';
+
+export type CardRefusalReason =
+  | 'card_balance_low'
+  | 'card_frozen'
+  | 'card_closing'
+  | 'card_transferred'
+  | 'card_not_found';
+
+export const CARD_REFUSAL_REASONS: readonly CardRefusalReason[] = [
+  'card_balance_low',
+  'card_frozen',
+  'card_closing',
+  'card_transferred',
+  'card_not_found',
+];
+
+export function isCardRefusalReason(v: unknown): v is CardRefusalReason {
+  return typeof v === 'string' && (CARD_REFUSAL_REASONS as readonly string[]).includes(v);
+}
+
+/** Fallback words for a card refusal whose body carried no message. */
+const CARD_REFUSAL_FALLBACK: Record<Exclude<CardRefusalReason, 'card_balance_low'>, string> = {
+  card_frozen: 'Your card is frozen',
+  card_closing: 'Your card is closing',
+  card_transferred: 'This card is no longer in your wallet',
+  card_not_found: "We couldn't find your card",
+};
 
 /**
  * The longest backend message the gate will show verbatim. A longer one is
@@ -89,6 +130,23 @@ export function fundingMessage(
     return {
       title: err.backendMessage ?? 'Payment refused',
       sub: `JubJub refused to start streaming${why}. Try again once this is resolved.`,
+      action: 'Try again',
+    };
+  }
+  if (err.reason === 'card_balance_low') {
+    // The one prompt a card holder sees. The backend's message when it sent
+    // one, else the amounts it sent; the gate adds the top-up link.
+    const has = err.balanceMicro != null ? `Your card holds ${formatMicroUsdc(err.balanceMicro)}. ` : '';
+    return {
+      title: 'Top up your card',
+      sub: err.backendMessage ?? `${has}Watching needs at least ${formatMicroUsdc(err.requiredMicro)}. Top up, then try again.`,
+      action: 'Try again',
+    };
+  }
+  if (isCardRefusalReason(err.reason)) {
+    return {
+      title: err.backendMessage ?? CARD_REFUSAL_FALLBACK[err.reason as Exclude<CardRefusalReason, 'card_balance_low'>],
+      sub: 'This card cannot pay for streaming right now. Try again once this is resolved.',
       action: 'Try again',
     };
   }
@@ -167,8 +225,14 @@ export class FundingRequiredError extends Error {
    * the gate shows as its title.
    */
   readonly backendMessage: string | null;
+  /** Card reasons only: the card the refusal is about (null otherwise). */
+  readonly tokenId: number | null;
+  /** Card reasons only: the card's hosted top-up page, as served (no return=). */
+  readonly topUpUrl: string | null;
 
   constructor(fields: {
+    tokenId?: number | null;
+    topUpUrl?: string | null;
     reason: FundingRequiredReason;
     message?: string;
     backendReason?: string | null;
@@ -196,9 +260,14 @@ export class FundingRequiredError extends Error {
     this.chainId = fields.chainId ?? null;
     this.owedMicro = fields.owedMicro ?? null;
     this.short = fields.short ?? null;
-    if (fields.reason === 'unknown') {
+    const card = isCardRefusalReason(fields.reason);
+    this.tokenId = card && fields.tokenId != null && Number.isFinite(fields.tokenId) ? fields.tokenId : null;
+    this.topUpUrl = card && typeof fields.topUpUrl === 'string' && /^https:\/\//.test(fields.topUpUrl)
+      ? fields.topUpUrl
+      : null;
+    if (fields.reason === 'unknown' || card) {
       this.backendReason =
-        typeof fields.backendReason === 'string' && fields.backendReason.trim()
+        fields.reason === 'unknown' && typeof fields.backendReason === 'string' && fields.backendReason.trim()
           ? fields.backendReason.trim().slice(0, MAX_BACKEND_MESSAGE_CHARS)
           : null;
       const said = typeof fields.message === 'string' ? fields.message.trim() : '';
@@ -207,6 +276,11 @@ export class FundingRequiredError extends Error {
       this.backendReason = null;
       this.backendMessage = null;
     }
+  }
+
+  /** True for the card reasons (card_balance_low, card_frozen, ...). */
+  get isCardRefusal(): boolean {
+    return isCardRefusalReason(this.reason);
   }
 
   /**
@@ -305,6 +379,19 @@ export function parseFundingError(
         reason === 'tab_unpaid' && (detail.short === 'allowance' || detail.short === 'balance')
           ? detail.short
           : null,
+    });
+  }
+  if (status === 402 && isCardRefusalReason(reason)) {
+    // A card session refused: {reason, message, token_id, required_micro,
+    // balance_micro, top_up_url}. Never an approval.
+    return new FundingRequiredError({
+      reason,
+      message,
+      requiredMicro: num(detail.required_micro),
+      balanceMicro: num(detail.balance_micro),
+      chainId: num(detail.chain_id),
+      tokenId: num(detail.token_id),
+      topUpUrl: typeof detail.top_up_url === 'string' ? detail.top_up_url : null,
     });
   }
   if (status === 402) {

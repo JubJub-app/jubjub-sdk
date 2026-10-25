@@ -1,6 +1,26 @@
 import type { FundingRequiredError } from './fundingErrors';
 import type { PublicProfile } from './privacy';
-export interface JubJubInitConfig {
+import type { CardInfo, PayerMode, SelectCardHook } from './core/Card';
+export type { CardInfo, PayerMode, SelectCardHook } from './core/Card';
+/** The card options, on init() (page-wide) and per instance (2.4.0). */
+export interface CardPaymentConfig {
+    /**
+     * How a viewer pays where the piece takes cards (playback-info
+     * card_accepted: true). 'auto' (default): a funded card just watches, no
+     * card shows "Get a card" with "Pay from your wallet instead". 'wallet':
+     * never look for a card. 'card': cards only, never the wallet fallback.
+     * Where card_accepted is false or absent, every mode runs today's approve
+     * flow unchanged.
+     */
+    payerMode?: PayerMode;
+    /**
+     * Called only when several cards each cover one minute, highest balance
+     * first. Return one of them (or its token_id); anything else keeps the
+     * highest balance.
+     */
+    onSelectCard?: SelectCardHook;
+}
+export interface JubJubInitConfig extends CardPaymentConfig {
     platformKey: string;
     apiUrl?: string;
     network?: 'testnet' | 'mainnet';
@@ -66,7 +86,7 @@ export interface ContentRegistration {
     platformVideoId?: string;
     platformVideoUrl?: string;
 }
-export interface JubJubOptions {
+export interface JubJubOptions extends CardPaymentConfig {
     contentId?: string;
     wallet?: WalletLike;
     apiUrl?: string;
@@ -141,6 +161,45 @@ export interface ContentInfo {
      * those are internal and are dropped by the SDK even if a backend sends them.
      */
     creator?: PublicProfile;
+    /**
+     * Card fields (2.4.0). Each is present only when the backend sent it, so a
+     * payload from an older backend reads exactly as before.
+     * card_accepted: this piece's catalogue takes card payments; anything but
+     * true runs today's approve flow. card_contract: the card on this chain
+     * (never hardcoded in the SDK). one_minute_micro: the card minimum at open.
+     */
+    card_contract?: string | null;
+    card_accepted?: boolean;
+    card_min_mint_usdc?: number | null;
+    card_page_url?: string | null;
+    one_minute_micro?: number;
+}
+/** POST /v2/streaming/sessions as the SDK reads it (card fields 2.4.0). */
+export interface StreamingSessionResult {
+    sessionId: string;
+    onChainSessionId: string;
+    /** 'card' on a card session; absent otherwise. */
+    rail?: string;
+    cardTokenId?: number | null;
+    /** What the card can still cover for this session at open, micro-USDC. */
+    cardBalanceMicro?: number | null;
+}
+/** Payloads of the card events (2.4.0). */
+export interface CardDetectedEvent {
+    cards: CardInfo[];
+    /** The hosted mint page, return= appended. */
+    mintUrl: string | null;
+}
+export interface CardLowEvent {
+    tokenId: number | null;
+    balanceMicro: number | null;
+    requiredMicro: number | null;
+    /** The hosted top-up page, return= appended. */
+    topUpUrl: string | null;
+}
+export interface CardEmptyEvent {
+    tokenId: number | null;
+    topUpUrl: string | null;
 }
 /**
  * The body of POST /v2/streaming/sessions/{id}/segment (backend

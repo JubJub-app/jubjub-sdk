@@ -1,6 +1,13 @@
-import type { ContentInfo, SearchParams, SearchResponse, SegmentResponse } from '../types';
+import type {
+  ContentInfo,
+  SearchParams,
+  SearchResponse,
+  SegmentResponse,
+  StreamingSessionResult,
+} from '../types';
 import { parseFundingError } from '../fundingErrors';
-import { parseContentNotPlayable, parseSessionCapped } from '../streamingErrors';
+import { parseCardNotAccepted, parseContentNotPlayable, parseSessionCapped } from '../streamingErrors';
+import { fetchCards, type CardsResponse } from '../core/Card';
 import { publicProfileFrom, redactEmails, stripInternalIdentity } from '../privacy';
 
 /**
@@ -258,7 +265,12 @@ export class ApiClient {
     contentId: string,
     walletAddress: string,
     playbackGrant?: string | null,
-  ): Promise<{ sessionId: string; onChainSessionId: string }> {
+    /**
+     * 2.4.0: open a card session against this card. Omitted (null or
+     * undefined) the body is exactly what it was before cards.
+     */
+    cardTokenId?: number | null,
+  ): Promise<StreamingSessionResult> {
     const res = await fetch(`${this.apiUrl}/v2/streaming/sessions`, {
       method: 'POST',
       headers: this.authHeaders(),
@@ -269,6 +281,7 @@ export class ApiClient {
         viewer_wallet: walletAddress,
         viewer_type: 'human',
         ...(playbackGrant ? { playback_grant: playbackGrant } : {}),
+        ...(cardTokenId != null ? { card_token_id: cardTokenId } : {}),
       }),
     });
     if (!res.ok) {
@@ -278,17 +291,38 @@ export class ApiClient {
       // 409 content_not_sellable (no live ownership contract yet, or hosted
       // elsewhere) is about the piece, not the service: typed so the gate
       // can say so instead of "Payment service unavailable".
+      // 409 card_not_accepted (2.4.0) is read before content_not_sellable:
+      // the piece's catalogue does not take cards, so the SDK falls back to
+      // the approve flow rather than gating.
       throw (
         parseFundingError(res.status, text) ??
+        parseCardNotAccepted(res.status, text) ??
         parseContentNotPlayable(res.status, text) ??
         new ApiHttpError('Create session', res.status, text)
       );
     }
     const data = await res.json();
-    return {
+    const result: StreamingSessionResult = {
       sessionId: data.session_id,
       onChainSessionId: data.on_chain_session_id,
     };
+    if (typeof data?.rail === 'string') result.rail = data.rail;
+    if (data?.card_token_id != null && Number.isFinite(Number(data.card_token_id))) {
+      result.cardTokenId = Number(data.card_token_id);
+    }
+    if (data?.card_balance_micro != null && Number.isFinite(Number(data.card_balance_micro))) {
+      result.cardBalanceMicro = Number(data.card_balance_micro);
+    }
+    return result;
+  }
+
+  /**
+   * 2.4.0: the cards `holder` holds, read live by the backend
+   * (GET /v2/public/cards?holder=). The platform key names the site, so the
+   * mint link carries that site's referral.
+   */
+  async getCards(holder: string, platformKey?: string | null): Promise<CardsResponse> {
+    return fetchCards(this.apiUrl, holder, platformKey);
   }
 
   /**
@@ -434,6 +468,17 @@ export function toContentInfo(raw: any): ContentInfo {
   if ('playback_grant' in r) info.playback_grant = r.playback_grant ?? null;
   if (typeof r.chain_name === 'string') info.chain_name = r.chain_name;
   if ('gated' in r) info.gated = r.gated === true;
+  // Card fields (2.4.0): only when sent, so an older payload reads as before.
+  if ('card_contract' in r) info.card_contract = typeof r.card_contract === 'string' ? r.card_contract : null;
+  if ('card_accepted' in r) info.card_accepted = r.card_accepted === true;
+  if ('card_min_mint_usdc' in r) {
+    const n = Number(r.card_min_mint_usdc);
+    info.card_min_mint_usdc = r.card_min_mint_usdc != null && Number.isFinite(n) ? n : null;
+  }
+  if ('card_page_url' in r) info.card_page_url = typeof r.card_page_url === 'string' ? r.card_page_url : null;
+  if (r.one_minute_micro != null && Number.isFinite(Number(r.one_minute_micro))) {
+    info.one_minute_micro = Number(r.one_minute_micro);
+  }
   const creator = publicProfileFrom(r, 'creator');
   if (creator) info.creator = creator;
   return info;

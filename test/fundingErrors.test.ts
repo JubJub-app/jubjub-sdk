@@ -337,7 +337,9 @@ test('a 402 with an unknown reason parses to reason unknown carrying the backend
     402,
     JSON.stringify({
       detail: {
-        reason: 'card_balance_low',
+        // card_balance_low was the example here until 2.4.0 made it a known
+        // reason; any reason this bundle predates behaves the same.
+        reason: 'wallet_paused',
         message: 'Your JubJub card is empty. Top it up to keep watching.',
         required_micro: 250000,
         balance_micro: 10000,
@@ -350,7 +352,7 @@ test('a 402 with an unknown reason parses to reason unknown carrying the backend
   assert.ok(err instanceof FundingRequiredError);
   const e = err as FundingRequiredError;
   assert.equal(e.reason, 'unknown');
-  assert.equal(e.backendReason, 'card_balance_low');
+  assert.equal(e.backendReason, 'wallet_paused');
   assert.equal(e.backendMessage, 'Your JubJub card is empty. Top it up to keep watching.');
   assert.equal(e.message, 'Your JubJub card is empty. Top it up to keep watching.');
   assert.equal(e.status, 402);
@@ -364,7 +366,7 @@ test('a 402 with an unknown reason parses to reason unknown carrying the backend
   assert.equal(e.chainId, 8453);
   const m = fundingMessage(e);
   assert.equal(m.title, 'Your JubJub card is empty. Top it up to keep watching.');
-  assert.equal(m.sub, 'JubJub refused to start streaming (card_balance_low). Try again once this is resolved.');
+  assert.equal(m.sub, 'JubJub refused to start streaming (wallet_paused). Try again once this is resolved.');
   assert.equal(m.action, 'Try again');
 });
 
@@ -479,5 +481,110 @@ test('the refresher treats an unknown 402 reason like any other: paused, reporte
     assert.equal(calls, 2);
   } finally {
     refresher.stop();
+  }
+});
+
+// --- 2.4.0: card refusals ---------------------------------------------------
+
+function cardBody(reason: string, extra: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    detail: {
+      reason,
+      message: 'The backend said why.',
+      token_id: 7,
+      required_micro: 60000,
+      balance_micro: 12000,
+      top_up_url: 'https://studio.jubjubapp.com/card/7',
+      ...extra,
+    },
+  });
+}
+
+test('402 card reasons parse as known reasons, never unknown, never an approval', () => {
+  for (const reason of ['card_balance_low', 'card_frozen', 'card_closing', 'card_transferred', 'card_not_found']) {
+    const err = parseFundingError(402, cardBody(reason));
+    assert.ok(err instanceof FundingRequiredError, reason);
+    const e = err as FundingRequiredError;
+    assert.equal(e.reason, reason);
+    assert.equal(e.isCardRefusal, true);
+    assert.equal(e.needsApproval, false);
+    assert.equal(e.backendReason, null);
+    assert.equal(e.backendMessage, 'The backend said why.');
+    assert.equal(e.tokenId, 7);
+    assert.equal(e.topUpUrl, 'https://studio.jubjubapp.com/card/7');
+    assert.equal(e.requiredMicro, 60000);
+    assert.equal(e.balanceMicro, 12000);
+  }
+});
+
+test('card_balance_low is the top-up prompt; the others show the backend message', () => {
+  const low = fundingMessage(parseFundingError(402, cardBody('card_balance_low')) as FundingRequiredError);
+  assert.equal(low.title, 'Top up your card');
+  assert.equal(low.sub, 'The backend said why.');
+  assert.equal(low.action, 'Try again');
+  const lowQuiet = fundingMessage(
+    parseFundingError(402, cardBody('card_balance_low', { message: undefined })) as FundingRequiredError,
+  );
+  assert.equal(lowQuiet.sub, 'Your card holds $0.01. Watching needs at least $0.06. Top up, then try again.');
+  const frozen = fundingMessage(parseFundingError(402, cardBody('card_frozen')) as FundingRequiredError);
+  assert.equal(frozen.title, 'The backend said why.');
+  assert.equal(frozen.action, 'Try again');
+  const silent = fundingMessage(
+    parseFundingError(402, cardBody('card_transferred', { message: '' })) as FundingRequiredError,
+  );
+  assert.equal(silent.title, 'This card is no longer in your wallet');
+});
+
+test('a card refusal keeps only an https top-up url', () => {
+  const e = parseFundingError(402, cardBody('card_balance_low', { top_up_url: 'javascript:alert(1)' })) as FundingRequiredError;
+  assert.equal(e.topUpUrl, null);
+});
+
+test('unknown reasons still parse as unknown next to the card reasons', () => {
+  const e = parseFundingError(402, cardBody('card_something_new')) as FundingRequiredError;
+  assert.equal(e.reason, 'unknown');
+  assert.equal(e.backendReason, 'card_something_new');
+  assert.equal(e.isCardRefusal, false);
+  assert.equal(e.tokenId, null);
+});
+
+test('a non-card funding error carries no card fields', () => {
+  const e = parseFundingError(402, body402('insufficient_allowance')) as FundingRequiredError;
+  assert.equal(e.isCardRefusal, false);
+  assert.equal(e.tokenId, null);
+  assert.equal(e.topUpUrl, null);
+});
+
+test('createStreamingSession sends card_token_id only when given, and types 409 card_not_accepted', async () => {
+  const realFetch = (globalThis as any).fetch;
+  const bodies: any[] = [];
+  let answer = { status: 200, body: { session_id: 's1', on_chain_session_id: '0x1', rail: 'card', card_token_id: 7, card_balance_micro: 1500000 } as any };
+  (globalThis as any).fetch = async (_url: string, init: any) => {
+    bodies.push(JSON.parse(init.body));
+    return {
+      ok: answer.status === 200,
+      status: answer.status,
+      json: async () => answer.body,
+      text: async () => JSON.stringify(answer.body),
+    };
+  };
+  try {
+    const api = new ApiClient('https://api.example');
+    const r = await api.createStreamingSession('c1', SPENDER, null, 7);
+    assert.equal(bodies[0].card_token_id, 7);
+    assert.equal(r.rail, 'card');
+    assert.equal(r.cardTokenId, 7);
+    assert.equal(r.cardBalanceMicro, 1500000);
+    answer = { status: 200, body: { session_id: 's2', on_chain_session_id: '0x2' } };
+    const plain = await api.createStreamingSession('c1', SPENDER);
+    assert.ok(!('card_token_id' in bodies[1]));
+    assert.deepEqual(plain, { sessionId: 's2', onChainSessionId: '0x2' });
+    answer = { status: 409, body: { detail: { reason: 'card_not_accepted' } } };
+    await assert.rejects(api.createStreamingSession('c1', SPENDER, null, 7), (err: any) => {
+      assert.equal(err.name, 'CardNotAcceptedError');
+      return true;
+    });
+  } finally {
+    (globalThis as any).fetch = realFetch;
   }
 });

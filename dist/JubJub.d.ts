@@ -39,6 +39,16 @@ export declare class JubJub extends EventEmitter {
     private reopening;
     /** 'jubjub:armed' has gone out for the current attach() (once per arming). */
     private armedDispatched;
+    /**
+     * The card this instance pays with (2.4.0). Kept across re-opens (cap
+     * rollover, replay) so they open with the same card_token_id without
+     * reading the cards again; cleared when the card can no longer pay.
+     */
+    private selectedCard;
+    /** The next attach() reads the cards again (after a top-up prompt). */
+    private cardReread;
+    /** The piece answered 409 card_not_accepted: approve flow from now on. */
+    private cardNotAccepted;
     constructor(options?: JubJubOptions);
     /** The package.json version this bundle was built from. */
     static readonly version: string;
@@ -170,6 +180,25 @@ export declare class JubJub extends EventEmitter {
     _isArmed(): boolean;
     private _dispatchArmed;
     private _gatePayment;
+    /** payerMode for this attempt: the viewer's wallet choice, else the option, else init(). */
+    private _payerMode;
+    /** A card's hosted top-up page with return= back to this page, or null. */
+    private _topUpUrl;
+    /** "Top up your card": card:low, then the gate with the top-up link. */
+    private _gateTopUp;
+    /**
+     * Find the card to pay with (2.4.0, after Steps 2 and 3). Returns the card,
+     * or null once it has gated: "Top up your card" (cards, none covering one
+     * minute at this price), "Get a card" (none; with "Pay from your wallet
+     * instead" in auto mode), or a retry when the cards could not be read.
+     */
+    private _detectCard;
+    /**
+     * "Pay from your wallet instead" for a host that renders its own card
+     * prompt (err.card.walletFallback): this video runs today's approve flow
+     * from now on, starting now.
+     */
+    payFromWallet(): Promise<void>;
     /**
      * Tell the host about a typed funding error before gating. 402 ->
      * 'funding:required' (FundingRequiredError), 503 -> 'funding:unverifiable'
@@ -189,6 +218,13 @@ export declare class JubJub extends EventEmitter {
      */
     private _gateMidPlayback;
     attach(contentId: string, video: HTMLVideoElement): Promise<void>;
+    /**
+     * Step 4, today's approve flow, unchanged (moved out of attach() in 2.4.0
+     * so a card session can skip it and a 409 card_not_accepted can fall back
+     * to it): the standing allowance, then any spender a previous 402 named.
+     * Gates and answers false on any failure; true once approval is in place.
+     */
+    private _approveStep;
     /**
      * This instance's session is closed (beacon, ended, cap, backend). Nothing
      * may be sent against it again: no segment (the tracker stops) and no URL
@@ -216,6 +252,13 @@ export declare class JubJub extends EventEmitter {
      * media simply waits for the next `play`.
      */
     private _onSegmentOutcome;
+    /**
+     * A card session's segment came back status "closed", end_reason
+     * "card_empty" (2.4.0). The session is already marked closed. card:empty,
+     * then, unless the video has ended: pause and show "Top up your card" with
+     * the card's top-up link; the retry re-opens, reading the cards again.
+     */
+    private _cardEmpty;
     /**
      * The session is closed and the viewer is watching (or wants to): open a
      * new session from the pot. The closed session's tracker, loop and handlers

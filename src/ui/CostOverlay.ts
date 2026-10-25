@@ -1,4 +1,5 @@
 import type { CostInfo } from '../types';
+import { cardOverlayText } from '../core/Card';
 
 type Position = 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left';
 
@@ -13,6 +14,9 @@ export class CostOverlay {
   private container: HTMLDivElement;
   private costEl: HTMLSpanElement;
   private timeEl: HTMLSpanElement;
+  /** 2.4.0: the card line, created by setCard() on a card session only. */
+  private cardEl: HTMLSpanElement | null = null;
+  private card: { balanceMicro: number; pricePerMinute: number } | null = null;
 
   constructor(video: HTMLVideoElement, position: Position = 'bottom-right', claimUrl?: string) {
     // Ensure the video has a positioned wrapper so the overlay is
@@ -89,7 +93,42 @@ export class CostOverlay {
     wrapper.appendChild(this.container);
   }
 
+  /**
+   * A card session (2.4.0): show what the card can still cover for this
+   * session (card_balance_micro at open, minus the cost so far) and the
+   * per-second price. Never called on the approve rail, so that chip is
+   * unchanged.
+   */
+  setCard(balanceMicro: number, pricePerMinute: number): void {
+    this.card = { balanceMicro, pricePerMinute };
+    if (!this.cardEl) {
+      const sep = document.createElement('span');
+      sep.style.cssText = 'opacity:0.4;';
+      sep.textContent = '·';
+      this.cardEl = document.createElement('span');
+      this.cardEl.setAttribute('data-jubjub-card', 'true');
+      this.cardEl.style.cssText = 'font-family:ui-monospace,monospace;opacity:0.85;';
+      // After the time, before the brand link.
+      const brand = this.timeEl.nextSibling;
+      if (brand && typeof this.container.insertBefore === 'function') {
+        this.container.insertBefore(sep, brand);
+        this.container.insertBefore(this.cardEl, brand);
+      } else {
+        this.container.appendChild(sep);
+        this.container.appendChild(this.cardEl);
+      }
+    }
+    this._renderCard(0);
+  }
+
+  private _renderCard(costUsdc: number): void {
+    if (!this.card || !this.cardEl) return;
+    const t = cardOverlayText(this.card.balanceMicro, costUsdc, this.card.pricePerMinute);
+    this.cardEl.textContent = `${t.remaining} · ${t.perSecond}`;
+  }
+
   update(cost: CostInfo): void {
+    this._renderCard(cost.usdc);
     this.costEl.textContent = cost.formatted;
     const totalSec = Math.floor(cost.seconds);
     const min = Math.floor(totalSec / 60);

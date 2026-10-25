@@ -165,3 +165,41 @@ export function parseSessionCapped(
     return null;
   }
 }
+
+/**
+ * POST /v2/streaming/sessions with card_token_id answers 409
+ * {"detail": {"reason": "card_not_accepted"}} when this piece's catalogue
+ * does not take card payments (2.4.0, card-rail-api.md). Not a gate: in
+ * payerMode 'auto' the SDK falls back silently to the approve flow.
+ */
+export class CardNotAcceptedError extends Error {
+  readonly name = 'CardNotAcceptedError';
+  readonly status = 409;
+  readonly reason = 'card_not_accepted' as const;
+
+  constructor(message?: string) {
+    super(message || 'card_not_accepted');
+    Object.setPrototypeOf(this, CardNotAcceptedError.prototype);
+  }
+}
+
+export function isCardNotAcceptedError(err: unknown): err is CardNotAcceptedError {
+  return err instanceof CardNotAcceptedError;
+}
+
+/** A CardNotAcceptedError from a failed response, or null. Never throws. */
+export function parseCardNotAccepted(
+  status: number,
+  bodyText: string | null | undefined,
+): CardNotAcceptedError | null {
+  if (status !== 409) return null;
+  try {
+    const body = bodyText ? JSON.parse(bodyText) : null;
+    const d = body && typeof body === 'object' ? (body as any).detail : null;
+    if (!d || typeof d !== 'object') return null;
+    if (d.reason !== 'card_not_accepted' && d.code !== 'card_not_accepted') return null;
+    return new CardNotAcceptedError(typeof d.message === 'string' ? d.message : undefined);
+  } catch {
+    return null;
+  }
+}

@@ -64,3 +64,18 @@ export declare function isSessionCappedError(err: unknown): err is SessionCapped
  * session_capped reason or code). Never throws.
  */
 export declare function parseSessionCapped(status: number, bodyText: string | null | undefined): SessionCappedError | null;
+/**
+ * POST /v2/streaming/sessions with card_token_id answers 409
+ * {"detail": {"reason": "card_not_accepted"}} when this piece's catalogue
+ * does not take card payments (2.4.0, card-rail-api.md). Not a gate: in
+ * payerMode 'auto' the SDK falls back silently to the approve flow.
+ */
+export declare class CardNotAcceptedError extends Error {
+    readonly name = "CardNotAcceptedError";
+    readonly status = 409;
+    readonly reason: "card_not_accepted";
+    constructor(message?: string);
+}
+export declare function isCardNotAcceptedError(err: unknown): err is CardNotAcceptedError;
+/** A CardNotAcceptedError from a failed response, or null. Never throws. */
+export declare function parseCardNotAccepted(status: number, bodyText: string | null | undefined): CardNotAcceptedError | null;

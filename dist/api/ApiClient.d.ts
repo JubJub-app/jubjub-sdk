@@ -1,4 +1,5 @@
-import type { ContentInfo, SearchParams, SearchResponse, SegmentResponse } from '../types';
+import type { ContentInfo, SearchParams, SearchResponse, SegmentResponse, StreamingSessionResult } from '../types';
+import { type CardsResponse } from '../core/Card';
 /**
  * A JubJub backend call that did not succeed: a non-2xx status, or a 2xx body
  * missing what the SDK needs. Distinct from wallet errors on purpose: the
@@ -70,10 +71,18 @@ export declare class ApiClient {
      *   when absent (older backend) — the server is in accept-not-require
      *   mode, so a missing grant must not fail the call.
      */
-    createStreamingSession(contentId: string, walletAddress: string, playbackGrant?: string | null): Promise<{
-        sessionId: string;
-        onChainSessionId: string;
-    }>;
+    createStreamingSession(contentId: string, walletAddress: string, playbackGrant?: string | null, 
+    /**
+     * 2.4.0: open a card session against this card. Omitted (null or
+     * undefined) the body is exactly what it was before cards.
+     */
+    cardTokenId?: number | null): Promise<StreamingSessionResult>;
+    /**
+     * 2.4.0: the cards `holder` holds, read live by the backend
+     * (GET /v2/public/cards?holder=). The platform key names the site, so the
+     * mint link carries that site's referral.
+     */
+    getCards(holder: string, platformKey?: string | null): Promise<CardsResponse>;
     /**
      * Tier 2 only: after payment is secured, resolve a short-lived,
      * session-scoped signed playback URL. Authenticated with the streaming

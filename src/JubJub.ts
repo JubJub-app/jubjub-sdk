@@ -15,10 +15,24 @@ import {
 } from './walletProviders';
 import {
   contentNotPlayableMessage,
+  isCardNotAcceptedError,
   isContentNotPlayableError,
   isSessionCappedError,
 } from './streamingErrors';
+import {
+  cardPromptText,
+  decideCard,
+  oneMinuteMicro,
+  withReturn,
+  type CardInfo,
+  type CardPrompt,
+  type CardsResponse,
+  type PayerMode,
+  type SelectCardHook,
+} from './core/Card';
 import { chainForNetwork, type NetworkFlag } from './chains';
+/** A card session's segment end_reason when the card ran out (2.4.0). */
+const CARD_EMPTY = 'card_empty';
 import {
   mustReopenNow,
   mustReopenOnPlay,
@@ -82,6 +96,16 @@ let _initOverlayPosition: 'bottom-right' | 'bottom-left' | 'top-right' | 'top-le
 /** Standing USDC allowance (whole dollars) approved once, drawn down across
  *  sessions. undefined → Approval uses its bounded default ($10). */
 let _initStreamingAllowanceUsd: number | undefined;
+/** init({ payerMode, onSelectCard }) (2.4.0); a per-instance option wins. */
+let _initPayerMode: PayerMode | undefined;
+let _initOnSelectCard: SelectCardHook | undefined;
+
+/**
+ * Videos whose viewer pressed "Pay from your wallet instead" on the
+ * "Get a card" gate: every later attempt on that element (retries, replays,
+ * cap rollovers) runs today's approve flow, as payerMode 'wallet' would.
+ */
+const _walletChosen = new WeakSet<HTMLVideoElement>();
 
 /** Content registration cache: mediaUrl → content_id */
 const _registrationCache = new Map<string, string>();
@@ -148,7 +172,7 @@ let _pendingSpenderApproval:
 // Defaults
 // ---------------------------------------------------------------------------
 const DEFAULTS: Required<
-  Omit<JubJubOptions, 'contentId' | 'wallet' | 'sessionToken' | 'onCostUpdate' | 'onSessionStart' | 'onSessionEnd' | 'onError' | 'onWalletConnected' | 'onFundingRequired'>
+  Omit<JubJubOptions, 'contentId' | 'wallet' | 'sessionToken' | 'onCostUpdate' | 'onSessionStart' | 'onSessionEnd' | 'onError' | 'onWalletConnected' | 'onFundingRequired' | 'payerMode' | 'onSelectCard'>
 > & { contentId: string | undefined; wallet: any } = {
   contentId: undefined,
   wallet: undefined,
@@ -241,6 +265,36 @@ function _dispatchGated(
   });
 }
 
+/** A card prompt's extra actions on the gate (2.4.0). */
+interface GateExtras {
+  link?: { href: string; text: string; kind: string };
+  secondary?: { text: string; onClick: () => void };
+}
+
+const WALLET_FALLBACK_TEXT = 'Pay from your wallet instead';
+
+/**
+ * The gate extras for a card prompt carried on a 'payment:required' error
+ * (err.card). `onWallet` runs the approve flow; it is offered only when the
+ * prompt says so (payerMode 'auto', no card).
+ */
+function _cardGateExtras(prompt: CardPrompt | null | undefined, onWallet: () => void): GateExtras | undefined {
+  if (!prompt) return undefined;
+  const extras: GateExtras = {};
+  if (prompt.url) extras.link = { href: prompt.url, text: prompt.linkText, kind: prompt.kind };
+  if (prompt.walletFallback) extras.secondary = { text: WALLET_FALLBACK_TEXT, onClick: onWallet };
+  return extras.link || extras.secondary ? extras : undefined;
+}
+
+/** The page the viewer is on, for the card pages' return= link. */
+function _pageUrl(): string | null {
+  try {
+    return typeof location !== 'undefined' && location.href ? String(location.href) : null;
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Payment-required gate shown when approval is rejected / not granted.
 // Keeps the video covered (it stays paused) and offers a retry affordance.
@@ -252,6 +306,7 @@ function _createPaymentGate(
   subText?: string,
   buttonText?: string,
   claimUrl?: string,
+  extras?: GateExtras,
 ): { remove: () => void } {
   const el = document.createElement('div');
   el.setAttribute('data-jubjub-gate', 'true');
@@ -271,13 +326,49 @@ function _createPaymentGate(
   sub.textContent = subText || DEFAULT_GATE_SUB;
   el.appendChild(sub);
 
+  // A card prompt (2.4.0): the hosted card page, in a new tab, is the
+  // primary action and the retry becomes the quieter one.
+  if (extras?.link) {
+    const link = document.createElement('a');
+    link.href = extras.link.href;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.setAttribute('data-jubjub-card-link', extras.link.kind);
+    link.style.cssText =
+      'cursor:pointer;border-radius:8px;padding:10px 18px;margin-top:4px;text-decoration:none;' +
+      'font-size:14px;font-weight:600;background:#fff;color:#000;font-family:inherit;';
+    link.textContent = extras.link.text;
+    el.appendChild(link);
+  }
+
   const btn = document.createElement('button');
   btn.type = 'button';
+  btn.setAttribute('data-jubjub-retry', 'true');
   btn.textContent = buttonText || 'Retry payment';
-  btn.style.cssText =
-    'cursor:pointer;border:0;border-radius:8px;padding:10px 18px;margin-top:4px;' +
-    'font-size:14px;font-weight:600;background:#fff;color:#000;font-family:inherit;';
+  btn.style.cssText = extras?.link
+    ? 'cursor:pointer;border:1px solid rgba(255,255,255,0.6);border-radius:8px;padding:8px 16px;' +
+      'font-size:13px;font-weight:600;background:transparent;color:#fff;font-family:inherit;'
+    : 'cursor:pointer;border:0;border-radius:8px;padding:10px 18px;margin-top:4px;' +
+      'font-size:14px;font-weight:600;background:#fff;color:#000;font-family:inherit;';
   el.appendChild(btn);
+
+  // "Pay from your wallet instead": today's approve flow, unchanged.
+  if (extras?.secondary) {
+    const secondary = document.createElement('button');
+    secondary.type = 'button';
+    secondary.setAttribute('data-jubjub-wallet-fallback', 'true');
+    secondary.textContent = extras.secondary.text;
+    secondary.style.cssText =
+      'cursor:pointer;border:0;background:transparent;color:#fff;opacity:0.8;' +
+      'font-size:12px;text-decoration:underline;font-family:inherit;';
+    const onSecondary = extras.secondary.onClick;
+    secondary.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      onSecondary();
+    });
+    el.appendChild(secondary);
+  }
 
   // The rights holder's exit from the paywall: see CostOverlay for why.
   if (claimUrl) {
@@ -384,6 +475,16 @@ export class JubJub extends EventEmitter {
   private reopening = false;
   /** 'jubjub:armed' has gone out for the current attach() (once per arming). */
   private armedDispatched = false;
+  /**
+   * The card this instance pays with (2.4.0). Kept across re-opens (cap
+   * rollover, replay) so they open with the same card_token_id without
+   * reading the cards again; cleared when the card can no longer pay.
+   */
+  private selectedCard: CardInfo | null = null;
+  /** The next attach() reads the cards again (after a top-up prompt). */
+  private cardReread = false;
+  /** The piece answered 409 card_not_accepted: approve flow from now on. */
+  private cardNotAccepted = false;
 
   constructor(options: JubJubOptions = {}) {
     super();
@@ -451,6 +552,12 @@ export class JubJub extends EventEmitter {
     }
     if (config.overlayPosition) {
       _initOverlayPosition = config.overlayPosition;
+    }
+    if (config.payerMode === 'auto' || config.payerMode === 'wallet' || config.payerMode === 'card') {
+      _initPayerMode = config.payerMode;
+    }
+    if (typeof config.onSelectCard === 'function') {
+      _initOnSelectCard = config.onSelectCard;
     }
 
     if (_initialized) {
@@ -789,6 +896,9 @@ export class JubJub extends EventEmitter {
         let gateTitle: string | undefined;
         let gateSub: string | undefined;
         let gateAction: string | undefined;
+        // A card prompt (2.4.0): the gate links the hosted card page and,
+        // for "Get a card" in auto mode, offers the wallet instead.
+        let gateCard: CardPrompt | undefined;
         try {
           if (contentId) {
             sdk = JubJub.play(contentId, video);
@@ -829,6 +939,7 @@ export class JubJub extends EventEmitter {
               gateTitle = e?.message || gateTitle;
               gateSub = e?.sub || gateSub;
               gateAction = e?.action || gateAction;
+              if (!settled) gateCard = e?.card ?? undefined;
               if (!settled) gatedBySdk = true;
               done(true);
             });
@@ -863,6 +974,12 @@ export class JubJub extends EventEmitter {
             gateSub,
             gateAction,
             claimUrlFor(contentId),
+            _cardGateExtras(gateCard, () => {
+              // The viewer chose the wallet: today's approve flow for this
+              // video from now on.
+              _walletChosen.add(video);
+              run();
+            }),
           );
           if (!gatedBySdk) _dispatchGated(video, contentId, gateTitle, gateSub);
           armPlay();
@@ -1169,16 +1286,142 @@ export class JubJub extends EventEmitter {
     });
   }
 
-  private _gatePayment(title: string, sub: string, cause?: unknown, action?: string): void {
+  private _gatePayment(
+    title: string,
+    sub: string,
+    cause?: unknown,
+    action?: string,
+    card?: CardPrompt,
+  ): void {
     const detail =
       cause instanceof Error ? cause.message : cause != null ? String(cause) : '';
     console.warn(`[JubJub] Gating playback (no free play): ${title}`, detail);
     _dispatchGated(this.video, this.attachedContentId ?? this.options.contentId, title, sub);
-    const err = new Error(title) as Error & { sub?: string; action?: string; cause?: unknown };
+    const err = new Error(title) as Error & {
+      sub?: string;
+      action?: string;
+      cause?: unknown;
+      card?: CardPrompt;
+    };
     err.sub = sub;
     if (action) err.action = action;
     if (cause !== undefined) err.cause = cause;
+    // 2.4.0: a card prompt ("Top up your card", "Get a card") carries its
+    // link and whether the wallet fallback is offered. Absent otherwise.
+    if (card) err.card = card;
     this.emit('payment:required', err);
+  }
+
+  /** payerMode for this attempt: the viewer's wallet choice, else the option, else init(). */
+  private _payerMode(): PayerMode {
+    if (this.video && _walletChosen.has(this.video)) return 'wallet';
+    const m = this.options.payerMode ?? _initPayerMode;
+    return m === 'wallet' || m === 'card' ? m : 'auto';
+  }
+
+  /** A card's hosted top-up page with return= back to this page, or null. */
+  private _topUpUrl(raw: string | null | undefined): string | null {
+    return raw ? withReturn(raw, _pageUrl()) : null;
+  }
+
+  /** "Top up your card": card:low, then the gate with the top-up link. */
+  private _gateTopUp(
+    fields: { tokenId: number | null; balanceMicro: number | null; requiredMicro: number | null; topUpUrl: string | null; message?: string | null },
+    cause?: unknown,
+  ): void {
+    this.cardReread = true;
+    const topUpUrl = this._topUpUrl(fields.topUpUrl);
+    this.emit('card:low', {
+      tokenId: fields.tokenId,
+      balanceMicro: fields.balanceMicro,
+      requiredMicro: fields.requiredMicro,
+      topUpUrl,
+    });
+    const text = cardPromptText('top_up', fields);
+    this._gatePayment(text.title, text.sub, cause, text.action, {
+      kind: 'top_up',
+      url: topUpUrl,
+      linkText: text.linkText,
+      walletFallback: false,
+      tokenId: fields.tokenId,
+    });
+  }
+
+  /**
+   * Find the card to pay with (2.4.0, after Steps 2 and 3). Returns the card,
+   * or null once it has gated: "Top up your card" (cards, none covering one
+   * minute at this price), "Get a card" (none; with "Pay from your wallet
+   * instead" in auto mode), or a retry when the cards could not be read.
+   */
+  private async _detectCard(address: string, mode: PayerMode): Promise<CardInfo | null> {
+    const info = this.contentInfo!;
+    let found: CardsResponse;
+    try {
+      found = await this.api.getCards(address, _platformKey);
+    } catch (cardsErr) {
+      this._gatePayment(
+        "Couldn't check your card",
+        "We couldn't reach JubJub to read your card. Please try again.",
+        cardsErr,
+        'Try again',
+        mode === 'auto'
+          ? { kind: 'unavailable', url: null, linkText: '', walletFallback: true, tokenId: null }
+          : undefined,
+      );
+      return null;
+    }
+    this.cardReread = false;
+    const pageUrl = _pageUrl();
+    const mintBase = found.mint_url ?? info.card_page_url ?? null;
+    const mintUrl = mintBase ? withReturn(mintBase, pageUrl) : null;
+    this.emit('card:detected', { cards: found.cards, mintUrl });
+    const minimum = oneMinuteMicro(info);
+    const decision = await decideCard(
+      found.cards,
+      minimum,
+      this.options.onSelectCard ?? _initOnSelectCard,
+    );
+    if (decision.kind === 'card') {
+      this.selectedCard = decision.card;
+      console.log('[JubJub] Card', decision.card.token_id, 'covers this video; no approval needed');
+      this.emit('card:selected', decision.card);
+      return decision.card;
+    }
+    this.selectedCard = null;
+    if (decision.kind === 'top_up') {
+      this._gateTopUp(
+        {
+          tokenId: decision.card.token_id,
+          balanceMicro: decision.card.balance_micro,
+          requiredMicro: minimum,
+          topUpUrl: decision.card.top_up_url,
+        },
+        new Error('card balance below one minute'),
+      );
+      return null;
+    }
+    const text = cardPromptText('get_card');
+    this._gatePayment(text.title, text.sub, new Error('no card'), text.action, {
+      kind: 'get_card',
+      url: mintUrl,
+      linkText: text.linkText,
+      walletFallback: mode === 'auto',
+      tokenId: null,
+    });
+    return null;
+  }
+
+  /**
+   * "Pay from your wallet instead" for a host that renders its own card
+   * prompt (err.card.walletFallback): this video runs today's approve flow
+   * from now on, starting now.
+   */
+  async payFromWallet(): Promise<void> {
+    const video = this.video;
+    const contentId = this.attachedContentId;
+    if (!video || !contentId) return;
+    _walletChosen.add(video);
+    await this.attach(contentId, video);
   }
 
   /**
@@ -1255,6 +1498,33 @@ export class JubJub extends EventEmitter {
     // stays up and we simply no-op.
     if (this.midPlaybackGate) return;
     const text = funding ? fundingMessage(funding) : null;
+    // A card session (2.4.0): the refresh's live card check refused. Low
+    // balance is "Top up your card" with the link; the retry asks for a URL
+    // again, which re-checks the card. Any other card refusal shows the
+    // backend's words and the next open reads the cards again.
+    let cardPrompt: CardPrompt | undefined;
+    if (isFundingRequiredError(cause) && cause.isCardRefusal) {
+      this.cardReread = true;
+      if (cause.reason === 'card_balance_low') {
+        const tokenId = cause.tokenId ?? this.session?.cardTokenId ?? null;
+        const topUpUrl = this._topUpUrl(cause.topUpUrl ?? this.selectedCard?.top_up_url);
+        this.emit('card:low', {
+          tokenId,
+          balanceMicro: cause.balanceMicro,
+          requiredMicro: cause.requiredMicro,
+          topUpUrl,
+        });
+        cardPrompt = {
+          kind: 'top_up',
+          url: topUpUrl,
+          linkText: cardPromptText('top_up').linkText,
+          walletFallback: false,
+          tokenId,
+        };
+      } else {
+        this.selectedCard = null;
+      }
+    }
     this.midPlaybackGate = _createPaymentGate(
       video,
       () => {
@@ -1314,6 +1584,7 @@ export class JubJub extends EventEmitter {
       text?.sub ?? 'Your paid session ended. Start a new session to keep watching.',
       text?.action,
       claimUrlFor(this.options.contentId),
+      _cardGateExtras(cardPrompt, () => {}),
     );
     _dispatchGated(
       video,
@@ -1322,10 +1593,16 @@ export class JubJub extends EventEmitter {
       text?.sub ?? 'Your paid session ended. Start a new session to keep watching.',
     );
     if (text) {
-      const err = new Error(text.title) as Error & { sub?: string; action?: string; cause?: unknown };
+      const err = new Error(text.title) as Error & {
+        sub?: string;
+        action?: string;
+        cause?: unknown;
+        card?: CardPrompt;
+      };
       err.sub = text.sub;
       err.action = text.action;
       err.cause = cause;
+      if (cardPrompt) err.card = cardPrompt;
       this.emit('payment:required', err);
       return;
     }
@@ -1402,64 +1679,27 @@ export class JubJub extends EventEmitter {
         console.log('[JubJub] Step 3 done');
       }
 
-      // 4. Approve USDC
-      console.log('[JubJub] Step 4: Checking USDC approval...');
-      let didApprove: boolean;
-      try {
-        // Construct inside the try so an Approval ctor throw (e.g. unsupported
-        // chain_id / chain-RPC mismatch) also gates rather than free-playing.
-        this.approval = new Approval(
-          this.wallet,
-          {
-            usdc_address: this.contentInfo.usdc_address,
-            payment_router: this.contentInfo.payment_router,
-            chain_id: this.contentInfo.chain_id,
-            price_per_minute_usdc: this.contentInfo.price_per_minute_usdc,
-            // Standing allowance: approve once, stream many sessions
-            // signature-free. Bounded default ($10) inside Approval when unset.
-            standing_allowance_usd: _initStreamingAllowanceUsd,
-          },
-        );
-        didApprove = await this.approval.ensureApproved();
-        // A previous attempt was refused 402 insufficient_allowance: approve
-        // the spender the backend named, on the same chain + token only.
-        const pending = _pendingSpenderApproval;
-        if (
-          pending &&
-          (pending.chainId == null || pending.chainId === this.contentInfo.chain_id) &&
-          (pending.token == null ||
-            pending.token.toLowerCase() === String(this.contentInfo.usdc_address).toLowerCase())
-        ) {
-          if (
-            await this.approval.ensureSpenderApproved(
-              pending.spender,
-              pending.requiredMicro,
-              pending.exact,
-            )
-          ) {
-            didApprove = true;
-          }
-          _pendingSpenderApproval = null;
+      // 3.5 The card (2.4.0). Only where playback-info says this piece takes
+      //     cards (card_accepted: true); false or absent (an older backend)
+      //     runs today's flow untouched: no cards call, no card_token_id. A
+      //     usable card covering one minute skips Step 4 entirely. A re-open
+      //     (cap rollover, replay) keeps the card already chosen; after a
+      //     top-up prompt the cards are read again.
+      let card: CardInfo | null = null;
+      const payerMode = this._payerMode();
+      if (this.contentInfo.card_accepted === true && payerMode !== 'wallet' && !this.cardNotAccepted) {
+        if (this.selectedCard && !this.cardReread) {
+          card = this.selectedCard;
+          console.log('[JubJub] Step 3.5: paying with card', card.token_id);
+        } else {
+          console.log('[JubJub] Step 3.5: looking for a card...');
+          card = await this._detectCard(address, payerMode);
+          if (!card) return;
         }
-      } catch (approvalErr) {
-        // FAIL CLOSED: approval rejected by the user, approve tx failed, the
-        // allowance could not be verified, or the chain/RPC was unusable. Do
-        // NOT proceed and do NOT fall through to free play. A wallet refusal
-        // (declined, not authorised, prompt pending, wrong network) is named;
-        // anything else keeps the approval wording.
-        if (classifyWalletError(approvalErr) !== 'other') {
-          this._gateWalletError(approvalErr, 'approve');
-          return;
-        }
-        this._gatePayment(
-          'Payment approval required to watch',
-          'Approve the USDC payment in your wallet to start streaming.',
-          approvalErr,
-        );
-        return;
       }
-      console.log('[JubJub] Step 4 done:', didApprove ? 'approved' : 'already approved');
-      if (didApprove) this.emit('approved', address);
+
+      // 4. Approve USDC (never on a card)
+      if (!card && !(await this._approveStep(address))) return;
 
       // 5. Create streaming session
       console.log('[JubJub] Step 5: Creating streaming session...');
@@ -1478,6 +1718,9 @@ export class JubJub extends EventEmitter {
             // Captured by step 1's getPlaybackInfo. Undefined against a
             // backend that predates grants — send nothing rather than fail.
             this.contentInfo?.playback_grant,
+            // 2.4.0: a card session. Undefined on the approve rail, so the
+            // body is exactly today's.
+            card ? card.token_id : undefined,
           );
           break;
         } catch (streamErr) {
@@ -1487,6 +1730,51 @@ export class JubJub extends EventEmitter {
             console.warn('[JubJub] The viewer token was refused (expired or revoked); signing a fresh one');
             if (!(await this._mintViewerToken(contentId, address))) return;
             continue;
+          }
+          // 409 card_not_accepted: this piece's catalogue does not take
+          // cards. Auto mode falls back to the approve flow with no prompt;
+          // payerMode 'card' never offers the wallet, so it stops and says so.
+          if (card && isCardNotAcceptedError(streamErr)) {
+            if (payerMode === 'card') {
+              this._gatePayment(
+                "This video doesn't take card payments",
+                'Card payments are not available for this video yet.',
+                streamErr,
+                'Try again',
+              );
+              return;
+            }
+            console.log('[JubJub] This piece does not take cards; using the wallet approval instead');
+            this.cardNotAccepted = true;
+            this.selectedCard = null;
+            card = null;
+            if (!(await this._approveStep(address))) return;
+            continue;
+          }
+          // A card refusal (402 card_*): card_balance_low is "Top up your
+          // card"; frozen, closing, transferred or not found stop with the
+          // backend's words. Never an approval; the token is fine.
+          if (isFundingRequiredError(streamErr) && streamErr.isCardRefusal) {
+            this._announceFunding(streamErr);
+            if (streamErr.reason === 'card_balance_low') {
+              this._gateTopUp(
+                {
+                  tokenId: streamErr.tokenId ?? card?.token_id ?? null,
+                  balanceMicro: streamErr.balanceMicro,
+                  requiredMicro: streamErr.requiredMicro,
+                  topUpUrl: streamErr.topUpUrl ?? card?.top_up_url ?? null,
+                  message: streamErr.backendMessage,
+                },
+                streamErr,
+              );
+              return;
+            }
+            // This card cannot pay: the retry reads the cards again.
+            this.selectedCard = null;
+            this.cardReread = true;
+            const text = fundingMessage(streamErr);
+            this._gatePayment(text.title, text.sub, streamErr, text.action);
+            return;
           }
           // 402 / 503 funding: say exactly what the viewer must do. The session
           // token is fine here -- the backend authenticated it before checking
@@ -1587,6 +1875,11 @@ export class JubJub extends EventEmitter {
           this.options.overlayPosition ?? 'bottom-right',
           claimUrlFor(contentId),
         );
+        // A card session (2.4.0): what the card can still cover and the
+        // per-second price, beside the running cost.
+        if (this.session.cardTokenId != null && this.session.cardBalanceMicro != null) {
+          this.overlay.setCard(this.session.cardBalanceMicro, this.contentInfo.price_per_minute_usdc);
+        }
       }
 
       // 8. Beacon close.
@@ -1660,6 +1953,74 @@ export class JubJub extends EventEmitter {
   }
 
   /**
+   * Step 4, today's approve flow, unchanged (moved out of attach() in 2.4.0
+   * so a card session can skip it and a 409 card_not_accepted can fall back
+   * to it): the standing allowance, then any spender a previous 402 named.
+   * Gates and answers false on any failure; true once approval is in place.
+   */
+  private async _approveStep(address: string): Promise<boolean> {
+      const contentInfo = this.contentInfo!;
+      console.log('[JubJub] Step 4: Checking USDC approval...');
+      let didApprove: boolean;
+      try {
+        // Construct inside the try so an Approval ctor throw (e.g. unsupported
+        // chain_id / chain-RPC mismatch) also gates rather than free-playing.
+        this.approval = new Approval(
+          this.wallet,
+          {
+            usdc_address: contentInfo.usdc_address,
+            payment_router: contentInfo.payment_router,
+            chain_id: contentInfo.chain_id,
+            price_per_minute_usdc: contentInfo.price_per_minute_usdc,
+            // Standing allowance: approve once, stream many sessions
+            // signature-free. Bounded default ($10) inside Approval when unset.
+            standing_allowance_usd: _initStreamingAllowanceUsd,
+          },
+        );
+        didApprove = await this.approval.ensureApproved();
+        // A previous attempt was refused 402 insufficient_allowance: approve
+        // the spender the backend named, on the same chain + token only.
+        const pending = _pendingSpenderApproval;
+        if (
+          pending &&
+          (pending.chainId == null || pending.chainId === contentInfo.chain_id) &&
+          (pending.token == null ||
+            pending.token.toLowerCase() === String(contentInfo.usdc_address).toLowerCase())
+        ) {
+          if (
+            await this.approval.ensureSpenderApproved(
+              pending.spender,
+              pending.requiredMicro,
+              pending.exact,
+            )
+          ) {
+            didApprove = true;
+          }
+          _pendingSpenderApproval = null;
+        }
+      } catch (approvalErr) {
+        // FAIL CLOSED: approval rejected by the user, approve tx failed, the
+        // allowance could not be verified, or the chain/RPC was unusable. Do
+        // NOT proceed and do NOT fall through to free play. A wallet refusal
+        // (declined, not authorised, prompt pending, wrong network) is named;
+        // anything else keeps the approval wording.
+        if (classifyWalletError(approvalErr) !== 'other') {
+          this._gateWalletError(approvalErr, 'approve');
+          return false;
+        }
+        this._gatePayment(
+          'Payment approval required to watch',
+          'Approve the USDC payment in your wallet to start streaming.',
+          approvalErr,
+        );
+        return false;
+      }
+      console.log('[JubJub] Step 4 done:', didApprove ? 'approved' : 'already approved');
+      if (didApprove) this.emit('approved', address);
+      return true;
+  }
+
+  /**
    * This instance's session is closed (beacon, ended, cap, backend). Nothing
    * may be sent against it again: no segment (the tracker stops) and no URL
    * refresh (the refresher stops, which also drops its own replay handler so
@@ -1719,8 +2080,59 @@ export class JubJub extends EventEmitter {
     const why = e.response?.end_reason ?? e.response?.status ?? 'closed';
     console.log(`[JubJub] Backend closed the session (${why}); no more segments to it`);
     this._markSessionClosed();
+    // 2.4.0: the card ran out mid-play. Pause and show "Top up your card";
+    // nothing re-opens until the viewer retries (which reads the cards again).
+    if (e.response?.end_reason === CARD_EMPTY) {
+      this._cardEmpty();
+      return;
+    }
     if (!video || !mustReopenNow(video)) return;
     void this._reopenSession(reopenModeFor(e.outcome));
+  }
+
+  /**
+   * A card session's segment came back status "closed", end_reason
+   * "card_empty" (2.4.0). The session is already marked closed. card:empty,
+   * then, unless the video has ended: pause and show "Top up your card" with
+   * the card's top-up link; the retry re-opens, reading the cards again.
+   */
+  private _cardEmpty(): void {
+    const video = this.video;
+    this.cardReread = true;
+    const tokenId = this.session?.cardTokenId ?? this.selectedCard?.token_id ?? null;
+    const topUpUrl = this._topUpUrl(this.selectedCard?.top_up_url);
+    this.emit('card:empty', { tokenId, topUpUrl });
+    if (!video || video.ended) return;
+    try { video.pause(); } catch { /* ignore */ }
+    if (this.midPlaybackGate) return;
+    const text = cardPromptText('top_up', { message: 'Your card has run out. Top up, then try again.' });
+    const prompt: CardPrompt = {
+      kind: 'top_up',
+      url: topUpUrl,
+      linkText: text.linkText,
+      walletFallback: false,
+      tokenId,
+    };
+    const contentId = this.attachedContentId ?? this.options.contentId ?? null;
+    this.midPlaybackGate = _createPaymentGate(
+      video,
+      () => {
+        this.midPlaybackGate?.remove();
+        this.midPlaybackGate = null;
+        void this._reopenSession(reopenModeFor('replay'));
+      },
+      text.title,
+      text.sub,
+      text.action,
+      claimUrlFor(contentId ?? undefined),
+      _cardGateExtras(prompt, () => {}),
+    );
+    _dispatchGated(video, contentId, text.title, text.sub);
+    const err = new Error(text.title) as Error & { sub?: string; action?: string; card?: CardPrompt };
+    err.sub = text.sub;
+    err.action = text.action;
+    err.card = prompt;
+    this.emit('payment:required', err);
   }
 
   /**
@@ -1750,13 +2162,18 @@ export class JubJub extends EventEmitter {
     }
     const resumeAt = video.currentTime || 0;
     const refused: {
-      text: { title: string; sub?: string; action?: string } | null;
+      text: { title: string; sub?: string; action?: string; card?: CardPrompt } | null;
       // The refusal came through 'payment:required', which already
       // dispatched 'jubjub:gated' on the element.
       announced: boolean;
     } = { text: null, announced: false };
     const onRequired = (e: any) => {
-      refused.text = { title: e?.message || 'Payment required', sub: e?.sub, action: e?.action };
+      refused.text = {
+        title: e?.message || 'Payment required',
+        sub: e?.sub,
+        action: e?.action,
+        card: e?.card ?? undefined,
+      };
       refused.announced = true;
     };
     this.on('payment:required', onRequired);
@@ -1824,6 +2241,12 @@ export class JubJub extends EventEmitter {
       refused.text?.sub ?? 'Your paid session ended. Press play to start a new one.',
       refused.text?.action,
       claimUrlFor(contentId),
+      _cardGateExtras(refused.text?.card, () => {
+        this.midPlaybackGate?.remove();
+        this.midPlaybackGate = null;
+        _walletChosen.add(video);
+        void this._reopenSession(reopenModeFor('replay'));
+      }),
     );
   }
 
