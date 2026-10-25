@@ -22,8 +22,18 @@ export type PayerMode = 'auto' | 'wallet' | 'card';
 export interface CardInfo {
   token_id: number;
   holder: string;
-  /** Micro-USDC (6 decimals). */
+  /**
+   * What the card can really spend, micro-USDC (6 decimals): the backend's
+   * available_micro, its on-chain balance less viewing already watched but not
+   * yet charged (cards are charged in batches). Every decision and every
+   * figure shown uses this. Older backends send no available_micro, and then
+   * it is the on-chain balance.
+   */
   balance_micro: number;
+  /** The on-chain balance (2.4.2). */
+  onchain_balance_micro: number;
+  /** Watched, not yet charged (2.4.2; 0 from older backends). */
+  pending_micro: number;
   frozen: boolean;
   /** Unix seconds; 0 = no burn requested. */
   burn_requested_at: number;
@@ -89,7 +99,9 @@ export function toCardInfo(raw: unknown): CardInfo | null {
   return {
     token_id: tokenId,
     holder: typeof r.holder === 'string' ? r.holder : '',
-    balance_micro: Math.max(0, int(r.balance_micro)),
+    balance_micro: Math.max(0, int(r.available_micro ?? r.balance_micro)),
+    onchain_balance_micro: Math.max(0, int(r.balance_micro)),
+    pending_micro: Math.max(0, int(r.pending_micro)),
     frozen: r.frozen === true,
     burn_requested_at: int(r.burn_requested_at),
     burnable_at: Number.isFinite(burnableAt) ? burnableAt : null,
@@ -315,6 +327,13 @@ export function cardPromptText(
     action: 'Try again',
   };
 }
+
+/**
+ * The one line a card holder reads beside their balance (Tom, 2026-10-26):
+ * why the balance moves in steps rather than every second.
+ */
+export const CARD_BATCH_NOTE =
+  "You're only charged for what you watch. Charges are grouped together to keep network fees low, so your balance updates in batches.";
 
 /**
  * The overlay's card line: what the card can still cover for this session
