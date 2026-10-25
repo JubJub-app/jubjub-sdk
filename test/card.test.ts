@@ -119,6 +119,7 @@ import {
   parseCardsResponse,
   withReturn,
   type CardInfo,
+  offerWalletOnTopUp,
 } from '../src/core/Card';
 import { parseCardNotAccepted } from '../src/streamingErrors';
 
@@ -909,4 +910,15 @@ test('a card whose pending viewing leaves less than a minute does not qualify', 
 test('the batch note is plain and has no em dash', () => {
   assert.match(CARD_BATCH_NOTE, /only charged for what you watch/);
   assert.ok(!CARD_BATCH_NOTE.includes('—'));
+});
+
+test('a low card offers the wallet in auto mode when the approval covers the $0.50 floor (Tom 2026-10-26)', () => {
+  assert.equal(offerWalletOnTopUp('auto', 500_000n), true);
+  assert.equal(offerWalletOnTopUp('auto', 9_000_000n), true);
+});
+
+test('a low card offers no wallet below the floor, when unread, or outside auto mode', () => {
+  assert.equal(offerWalletOnTopUp('auto', 499_999n), false);
+  assert.equal(offerWalletOnTopUp('auto', null), false);
+  assert.equal(offerWalletOnTopUp('card', 9_000_000n), false);
 });

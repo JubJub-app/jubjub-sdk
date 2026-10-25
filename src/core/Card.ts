@@ -12,6 +12,7 @@
  * The card contract address is never hardcoded here: the backend reads the
  * cards live from the chain and serves them through GET /v2/public/cards.
  */
+import { PREFLIGHT_FLOOR_MICRO } from '../allowancePolicy';
 
 /** 'auto' (default): use a card when the piece takes one, else the wallet.
  *  'wallet': never look for a card (today's approve flow).
@@ -30,9 +31,9 @@ export interface CardInfo {
    * it is the on-chain balance.
    */
   balance_micro: number;
-  /** The on-chain balance (2.4.2). */
+  /** The on-chain balance (2.5.1). */
   onchain_balance_micro: number;
-  /** Watched, not yet charged (2.4.2; 0 from older backends). */
+  /** Watched, not yet charged (2.5.1; 0 from older backends). */
   pending_micro: number;
   frozen: boolean;
   /** Unix seconds; 0 = no burn requested. */
@@ -354,4 +355,14 @@ export function cardOverlayText(
     perSecond: `$${(Number.isFinite(perSecond) ? perSecond : 0).toFixed(4)}/s`,
     remainingUsdc,
   };
+}
+
+/**
+ * Whether "Top up your card" also offers "Pay from your wallet instead"
+ * (Tom, 2026-10-26): in auto payer mode, when the wallet's standing approval
+ * already covers the $0.50 floor, so the fallback asks for no approval.
+ * `allowanceMicro` null means the allowance could not be read: no offer.
+ */
+export function offerWalletOnTopUp(mode: string, allowanceMicro: bigint | null): boolean {
+  return mode === 'auto' && allowanceMicro !== null && allowanceMicro >= PREFLIGHT_FLOOR_MICRO;
 }

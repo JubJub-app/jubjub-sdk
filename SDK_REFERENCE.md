@@ -551,7 +551,7 @@ site's referral) and decides:
 | The wallet holds | What the viewer sees |
 |---|---|
 | A usable card (not frozen, no burn pending) whose balance covers one minute at this price (`one_minute_micro`) | Nothing. Step 4 (approval) is skipped and the session opens with `card_token_id`. Several: the highest balance, unless `onSelectCard` returns another of them (or its `token_id`). |
-| Cards, none covering one minute | "Top up your card": a link to the card's `top_up_url` + `?return=<page>` (new tab) and "Try again", which reads the cards again. |
+| Cards, none covering one minute | "Top up your card": a link to the card's `top_up_url` + `?return=<page>` (new tab) and "Try again", which reads the cards again. 2.5.1: in `payerMode: 'auto'`, when the wallet's standing approval already covers the $0.50 floor, also "Pay from your wallet instead" (no approval prompt). |
 | No usable card, and one is frozen or has a burn pending (2.4.1) | The backend's words for it ("Your card is frozen", "Your card is closing") and "Try again", which reads the cards again. No top-up link: a top-up cannot let a frozen card pay. No approval. |
 | No card | One "Get a card" prompt: a link to `mint_url` + `&return=<page>` (new tab), "Try again", and "Pay from your wallet instead", which runs the approve flow unchanged for that video from then on. `payerMode: 'card'` never offers the wallet. |
 
@@ -574,7 +574,13 @@ site's referral) and decides:
   `card_token_id` (no second cards call).
 - The overlay on a card session also shows what the card can still cover
   (`card_balance_micro` from the session open, minus the cost so far) and the
-  per-second price.
+  per-second price. Its info text (`title`) is `CARD_BATCH_NOTE`: charges are
+  grouped, so the balance updates in batches (2.5.1).
+- 2.5.1: cards are charged in batches (at $0.50 owed, or an hour after the
+  oldest uncharged viewing, and always before a burn or after a transfer), so
+  `CardInfo.balance_micro` is the backend's `available_micro`: the on-chain
+  balance less viewing watched but not yet charged. Every decision and figure
+  uses it; `onchain_balance_micro` and `pending_micro` carry the parts.
 - A host rendering its own gate reads `err.card` on `payment:required`:
   `{ kind: 'top_up' | 'get_card' | 'unavailable', url, linkText,
   walletFallback, tokenId }`; `sdk.payFromWallet()` is the fallback action.
