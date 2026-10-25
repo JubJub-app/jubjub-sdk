@@ -49,11 +49,32 @@ export declare class ApiClient {
      *   deliberately no unproven fallback — the server rejects that path once
      *   VIEWER_SESSION_REQUIRE_PROOF is on, and a silent fallback would keep
      *   the hole open indefinitely.
+     * @param opts.proof A sign-in the wallet already made in the connect
+     *   prompt (wallet_connect + signInWithEthereum, 2.5.0): posted as is, no
+     *   second prompt. Absent: the server-built message is signed, as before.
+     * @param opts.devicePublicKey The public half of this site's device key:
+     *   the backend then remembers the sign-in on this site for 30 days and
+     *   answers remembered_session_id (see rememberedSignIn.ts).
      */
-    createViewerSession(contentId: string, walletAddress: string, signMessage: (message: string) => Promise<string>): Promise<{
+    createViewerSession(contentId: string, walletAddress: string, signMessage: (message: string) => Promise<string>, opts?: {
+        proof?: {
+            message: string;
+            signature: string;
+            nonce: string;
+        } | null;
+        devicePublicKey?: {
+            kty: string;
+            crv: string;
+            x: string;
+            y: string;
+        } | null;
+    }): Promise<{
         sessionToken: string;
         profileId: string;
+        remembered_session_id?: string | null;
+        remembered_until?: string | null;
     }>;
+    private _postViewerSession;
     /**
      * Search JubJub's discoverable catalogue. Free — search is the discovery
      * funnel; only per-piece unlocks are priced.

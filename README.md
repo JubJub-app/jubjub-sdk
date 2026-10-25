@@ -84,6 +84,14 @@ attributes are never touched.
 
 **JubJub handles the money stream, not the video stream.** Your video serves from your own CDN.
 
+## Sign in once per site (2.5.0)
+
+A viewer's first video on a site is: connect the wallet, approve once, watch.
+Where the wallet supports it (Coinbase Wallet, Base Account), connect and
+sign-in are one prompt. After that the viewer is not asked again on that site
+for 30 days; switching wallet or disconnecting asks again. Nothing to
+configure (`rememberSignIn: false` turns it off). Details: `SDK_REFERENCE.md`.
+
 ## The JubJub card (2.4.0)
 
 Where a piece's catalogue takes the JubJub card (playback-info

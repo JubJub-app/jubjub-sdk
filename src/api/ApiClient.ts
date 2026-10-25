@@ -148,12 +148,37 @@ export class ApiClient {
    *   deliberately no unproven fallback — the server rejects that path once
    *   VIEWER_SESSION_REQUIRE_PROOF is on, and a silent fallback would keep
    *   the hole open indefinitely.
+   * @param opts.proof A sign-in the wallet already made in the connect
+   *   prompt (wallet_connect + signInWithEthereum, 2.5.0): posted as is, no
+   *   second prompt. Absent: the server-built message is signed, as before.
+   * @param opts.devicePublicKey The public half of this site's device key:
+   *   the backend then remembers the sign-in on this site for 30 days and
+   *   answers remembered_session_id (see rememberedSignIn.ts).
    */
   async createViewerSession(
     contentId: string,
     walletAddress: string,
     signMessage: (message: string) => Promise<string>,
-  ): Promise<{ sessionToken: string; profileId: string }> {
+    opts: {
+      proof?: { message: string; signature: string; nonce: string } | null;
+      devicePublicKey?: { kty: string; crv: string; x: string; y: string } | null;
+    } = {},
+  ): Promise<{
+    sessionToken: string;
+    profileId: string;
+    remembered_session_id?: string | null;
+    remembered_until?: string | null;
+  }> {
+    if (opts.proof) {
+      return this._postViewerSession({
+        content_id: contentId,
+        wallet_address: walletAddress,
+        signature: opts.proof.signature,
+        nonce: opts.proof.nonce,
+        siwe_message: opts.proof.message,
+        ...(opts.devicePublicKey ? { device_public_key: opts.devicePublicKey } : {}),
+      });
+    }
     const nonceRes = await fetch(
       `${this.apiUrl}/v2/auth/wallet-nonce?address=${encodeURIComponent(
         walletAddress.toLowerCase(),
@@ -171,15 +196,25 @@ export class ApiClient {
     // from this string, so any reformatting breaks verification.
     const signature = await signMessage(message);
 
+    return this._postViewerSession({
+      content_id: contentId,
+      wallet_address: walletAddress,
+      signature,
+      nonce,
+      ...(opts.devicePublicKey ? { device_public_key: opts.devicePublicKey } : {}),
+    });
+  }
+
+  private async _postViewerSession(body: Record<string, unknown>): Promise<{
+    sessionToken: string;
+    profileId: string;
+    remembered_session_id?: string | null;
+    remembered_until?: string | null;
+  }> {
     const res = await fetch(`${this.apiUrl}/v2/public/viewer-session`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        content_id: contentId,
-        wallet_address: walletAddress,
-        signature,
-        nonce,
-      }),
+      body: JSON.stringify(body),
     });
     if (!res.ok) {
       throw new ApiHttpError('Viewer session', res.status, await res.text().catch(() => ''));
@@ -189,6 +224,8 @@ export class ApiClient {
     return {
       sessionToken: data.session_token,
       profileId: data.profile_id,
+      remembered_session_id: data.remembered_session_id ?? null,
+      remembered_until: data.remembered_until ?? null,
     };
   }
 
