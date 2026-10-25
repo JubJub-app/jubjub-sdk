@@ -1,6 +1,6 @@
 # JubJub SDK Reference
 
-**Version:** 2.3.2
+**Version:** 2.4.0
 **Chain:** Base (Coinbase L2) — `network: 'mainnet'` → Base mainnet (default), `network: 'testnet'` → Base Sepolia
 **Status:** Live on Base mainnet. Omitting `network` means mainnet; pass `network: 'testnet'` to develop against Sepolia.
 
@@ -58,7 +58,7 @@ const { content_id } = await res.json();
 
 That's it. `stable/` moves only after a release has passed the full test
 suite. To pin a version, load
-`https://jubjub-app.github.io/jubjub-sdk/v/2.3.2/jubjub-sdk.umd.js` instead.
+`https://jubjub-app.github.io/jubjub-sdk/v/2.4.0/jubjub-sdk.umd.js` instead.
 The older `.../jubjub-sdk/dist/jubjub-sdk.umd.js` address is legacy (main's
 unpinned build output); it keeps working, but new integrations load `stable/`
 or `v/<version>/`.
@@ -289,6 +289,8 @@ const sdk = new JubJub({
   onError: (error) => {},
   onWalletConnected: (address) => {},
   sessionToken: 'jj_...',          // optional: a session the host already holds (see below)
+  payerMode: 'auto',               // 2.4.0: 'auto' | 'wallet' | 'card' (see The JubJub card)
+  onSelectCard: (cards) => {},     // 2.4.0: optional, when several cards qualify
 });
 
 await sdk.attach('cnt_abc123', videoElement);
@@ -426,6 +428,20 @@ dashboard's /watch and /embed behave identically.
   check on every push and pull request refuses a tree where they differ. Load
   `https://jubjub-app.github.io/jubjub-sdk/stable/jubjub-sdk.umd.js`.
 
+2.4.0 (card payments, 2026-10-25). The JubJub card, as Tom decided it: a
+funded card just watches, the only prompts are "Top up your card" and "Get a
+card" (with "Pay from your wallet instead"), and nothing changes where the
+piece does not take cards. See "The JubJub card (2.4.0)" above. New:
+`payerMode` and `onSelectCard` (init and per instance); events `card:detected`
+`{ cards, mintUrl }`, `card:selected` (the card), `card:low`
+`{ tokenId, balanceMicro, requiredMicro, topUpUrl }`, `card:empty`
+`{ tokenId, topUpUrl }`; 402 reasons `card_balance_low`, `card_frozen`,
+`card_closing`, `card_transferred`, `card_not_found` parse as known reasons
+(any other new reason is still `unknown`); `CardNotAcceptedError`;
+`ContentInfo.card_contract`, `card_accepted`, `card_min_mint_usdc`,
+`card_page_url`, `one_minute_micro`; `sdk.payFromWallet()`. The approve
+flow, its floor, the cap and metering are unchanged.
+
 2.3.2 (docs, 2026-10-25). The JubJubPaymentRouter rail is retired on the
 backend (Tom, 2026-10-25); the creator pool is the one streaming spender, and
 the comments and this document say so. `payment_router` keeps its name and
@@ -460,6 +476,52 @@ changed.
   media URL from `src` when `data-jubjub-media-url` is absent, so a host that
   holds the source back there must set `data-jubjub-media-url`.
 
+### The JubJub card (2.4.0)
+
+Where the piece's catalogue takes card payments (playback-info
+`card_accepted: true`), a viewer whose wallet holds a funded JubJub card just
+watches: no approval, no popup, no message. Where `card_accepted` is false or
+absent (an older backend), every `payerMode` runs the approve flow exactly as
+before: no cards call, and no `card_token_id` in the session body.
+
+```javascript
+JubJub.init({
+  platformKey: 'pk_...',
+  payerMode: 'auto',               // 'auto' (default) | 'wallet' | 'card'
+  onSelectCard: (cards) => cards[0], // optional; several cards each cover a minute
+});
+```
+
+After the wallet connects and the viewer token is held (Steps 2 and 3), the
+SDK reads `GET /v2/public/cards?holder=<wallet>` (header
+`X-JubJub-Platform-Key` when `init()` had one, so the mint link carries the
+site's referral) and decides:
+
+| The wallet holds | What the viewer sees |
+|---|---|
+| A usable card (not frozen, no burn pending) whose balance covers one minute at this price (`one_minute_micro`) | Nothing. Step 4 (approval) is skipped and the session opens with `card_token_id`. Several: the highest balance, unless `onSelectCard` returns another of them (or its `token_id`). |
+| Cards, none covering one minute | "Top up your card": a link to the card's `top_up_url` + `?return=<page>` (new tab) and "Try again", which reads the cards again. |
+| No card | One "Get a card" prompt: a link to `mint_url` + `&return=<page>` (new tab), "Try again", and "Pay from your wallet instead", which runs the approve flow unchanged for that video from then on. `payerMode: 'card'` never offers the wallet. |
+
+- `payerMode: 'wallet'` never looks for a card.
+- 409 `card_not_accepted` at open: the approve flow runs with no prompt
+  (`payerMode: 'card'` stops and says the video doesn't take card payments).
+- 402 `card_balance_low` (at open or on a Tier 2 URL refresh) is "Top up your
+  card". `card_frozen`, `card_closing`, `card_transferred` and
+  `card_not_found` stop with the backend's message
+  (`FundingRequiredError.isCardRefusal`, `tokenId`, `topUpUrl`).
+- Charged only while the video plays (the same segment metering). A segment
+  answered `end_reason: "card_empty"` pauses and shows "Top up your card"; its
+  retry reads the cards again. `cap_reached` rolls over silently with the same
+  `card_token_id` (no second cards call).
+- The overlay on a card session also shows what the card can still cover
+  (`card_balance_micro` from the session open, minus the cost so far) and the
+  per-second price.
+- A host rendering its own gate reads `err.card` on `payment:required`:
+  `{ kind: 'top_up' | 'get_card' | 'unavailable', url, linkText,
+  walletFallback, tokenId }`; `sdk.payFromWallet()` is the fallback action.
+- No mint or top-up happens in the SDK: both are on the hosted card pages.
+
 ### Static shorthand
 
 ```javascript
@@ -484,6 +546,11 @@ sdk.on('cost', ({ usdc, seconds, formatted }) => {});
 sdk.on('session:end', (summary) => {});
 sdk.on('error', (error) => {});
 sdk.on('ready', () => {});
+// 2.4.0, where the piece takes cards:
+sdk.on('card:detected', ({ cards, mintUrl }) => {});
+sdk.on('card:selected', (card) => {});
+sdk.on('card:low', ({ tokenId, balanceMicro, requiredMicro, topUpUrl }) => {});
+sdk.on('card:empty', ({ tokenId, topUpUrl }) => {});
 ```
 
 Element events (2.3.0), dispatched on the `<video>` itself for hosts that
@@ -594,7 +661,7 @@ the root of `main`, so three addresses exist:
 | Address | What it is |
 |---|---|
 | `https://jubjub-app.github.io/jubjub-sdk/stable/jubjub-sdk.umd.js` | The release to load. Moves only after `npm run release` has passed the full test suite. |
-| `https://jubjub-app.github.io/jubjub-sdk/v/2.3.2/jubjub-sdk.umd.js` | That release, pinned. One folder per version. |
+| `https://jubjub-app.github.io/jubjub-sdk/v/2.4.0/jubjub-sdk.umd.js` | That release, pinned. One folder per version. |
 | `https://jubjub-app.github.io/jubjub-sdk/dist/jubjub-sdk.umd.js` | Legacy: main's build output, unpinned. Kept working. |
 
 `npm run release` runs the tests, builds, and copies `dist/jubjub-sdk.umd.js`

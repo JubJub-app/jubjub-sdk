@@ -15,7 +15,25 @@ export {
   isFundingRequiredError,
   isFundingUnverifiableError,
 } from './fundingErrors';
-export type { FundingRequiredReason } from './fundingErrors';
+export { CARD_REFUSAL_REASONS, isCardRefusalReason } from './fundingErrors';
+export type { FundingRequiredReason, CardRefusalReason } from './fundingErrors';
+export {
+  decideCard,
+  qualifyingCards,
+  oneMinuteMicro,
+  parseCardsResponse,
+  toCardInfo,
+  withReturn,
+  fetchCards,
+  cardPromptText,
+  cardOverlayText,
+} from './core/Card';
+export type {
+  CardDecision,
+  CardsResponse,
+  CardPrompt,
+  CardPromptKind,
+} from './core/Card';
 export {
   classifyWalletError,
   walletGateMessage,
@@ -41,6 +59,9 @@ export {
   SessionCappedError,
   isSessionCappedError,
   parseSessionCapped,
+  CardNotAcceptedError,
+  isCardNotAcceptedError,
+  parseCardNotAccepted,
 } from './streamingErrors';
 export type { ContentNotPlayableReason } from './streamingErrors';
 export {
@@ -87,6 +108,14 @@ export type {
   SearchResponse,
   JubJubArmedDetail,
   JubJubGatedDetail,
+  CardInfo,
+  PayerMode,
+  SelectCardHook,
+  CardPaymentConfig,
+  StreamingSessionResult,
+  CardDetectedEvent,
+  CardLowEvent,
+  CardEmptyEvent,
 } from './types';
 export { JUBJUB_ARMED_EVENT, JUBJUB_GATED_EVENT } from './types';
 

@@ -15,6 +15,13 @@
  *                   "chain_id"}}
  *   503 {"detail": {"reason": "funding_unverifiable", "message"}}
  *
+ * A card session (2.4.0, body card_token_id) answers instead:
+ *   402 {"detail": {"reason": "card_balance_low" | "card_frozen" | "card_closing"
+ *                   | "card_transferred" | "card_not_found", "message",
+ *                   "token_id", "required_micro", "balance_micro", "top_up_url"}}
+ * card_balance_low is the "Top up your card" prompt; the others show the
+ * backend's message. None of them is ever an approval.
+ *
  * tab_unpaid (session open, and a session the backend ended mid-play): the
  * wallet owes for earlier viewing, so allowance AND balance must cover the
  * tab plus the floor. required_micro is that total, and it is exactly what
@@ -37,11 +44,21 @@ export declare const USDC_MICRO = 1000000;
 export declare const DEFAULT_REQUIRED_MICRO = 500000;
 export type FundingRequiredReason = 'insufficient_allowance' | 'insufficient_balance' | 'tab_unpaid'
 /**
+ * Card sessions (2.4.0, card-rail-api.md). card_balance_low: the card covers
+ * less than one minute; the gate is "Top up your card". The others stop
+ * with the backend's message: card_frozen, card_closing (burn requested),
+ * card_transferred (the wallet no longer holds it), card_not_found.
+ */
+ | CardRefusalReason
+/**
  * Forward compatibility: a 402 whose reason this bundle does not know.
  * The backend's reason string is kept in `backendReason` and its message
  * is the error message; the gate shows those words. Never an approval.
  */
  | 'unknown';
+export type CardRefusalReason = 'card_balance_low' | 'card_frozen' | 'card_closing' | 'card_transferred' | 'card_not_found';
+export declare const CARD_REFUSAL_REASONS: readonly CardRefusalReason[];
+export declare function isCardRefusalReason(v: unknown): v is CardRefusalReason;
 /** "$0.50" from 500000 micro USDC. */
 export declare function formatMicroUsdc(micro: number): string;
 /**
@@ -90,7 +107,13 @@ export declare class FundingRequiredError extends Error {
      * the gate shows as its title.
      */
     readonly backendMessage: string | null;
+    /** Card reasons only: the card the refusal is about (null otherwise). */
+    readonly tokenId: number | null;
+    /** Card reasons only: the card's hosted top-up page, as served (no return=). */
+    readonly topUpUrl: string | null;
     constructor(fields: {
+        tokenId?: number | null;
+        topUpUrl?: string | null;
         reason: FundingRequiredReason;
         message?: string;
         backendReason?: string | null;
@@ -103,6 +126,8 @@ export declare class FundingRequiredError extends Error {
         owedMicro?: number | null;
         short?: 'allowance' | 'balance' | null;
     });
+    /** True for the card reasons (card_balance_low, card_frozen, ...). */
+    get isCardRefusal(): boolean;
     /**
      * True when the fix is an approval: insufficient_allowance, or a tab the
      * allowance does not cover. tab_unpaid short on BALANCE is not one, and

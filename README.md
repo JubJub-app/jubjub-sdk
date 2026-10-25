@@ -12,7 +12,7 @@ That is the stable address: it moves only after a release has passed the full
 test suite. To pin a version instead:
 
 ```html
-<script src="https://jubjub-app.github.io/jubjub-sdk/v/2.3.2/jubjub-sdk.umd.js"></script>
+<script src="https://jubjub-app.github.io/jubjub-sdk/v/2.4.0/jubjub-sdk.umd.js"></script>
 ```
 
 (The older `.../jubjub-sdk/dist/jubjub-sdk.umd.js` address is legacy: it is
@@ -83,6 +83,20 @@ to do; the video does not play until payment is in place. Videos without JubJub
 attributes are never touched.
 
 **JubJub handles the money stream, not the video stream.** Your video serves from your own CDN.
+
+## The JubJub card (2.4.0)
+
+Where a piece's catalogue takes the JubJub card (playback-info
+`card_accepted: true`), a viewer whose wallet holds a funded card just
+watches: no approval and no popup. They are charged only while the video
+plays, and the per-session cap rolls over silently. The only prompt they see
+is "Top up your card" when the card can't cover a minute. A viewer with no
+card sees one "Get a card" prompt (the hosted card page, in a new tab) with
+"Pay from your wallet instead", which is the pot flow above, unchanged.
+
+`JubJub.init({ payerMode })`: `'auto'` (default), `'wallet'` (never look for
+a card) or `'card'` (never offer the wallet). Where the piece doesn't take
+cards, every mode is the pot flow. Details: `SDK_REFERENCE.md`.
 
 ## Data Attributes
 
@@ -161,6 +175,7 @@ const sdk = new JubJub({
   onSessionEnd: (summary) => {},
   onError: (error) => {},
   onWalletConnected: (address) => {},
+  payerMode: 'auto',                       // 2.4.0: 'auto' | 'wallet' | 'card'
 });
 
 await sdk.attach('content-id', videoElement);
@@ -196,6 +211,8 @@ sdk.on('cost', (costInfo) => { /* { usdc, seconds, formatted } */ });
 sdk.on('session:end', (summary) => { /* final summary */ });
 sdk.on('error', (error) => { /* handle error */ });
 sdk.on('ready', () => { /* everything set up */ });
+sdk.on('card:selected', (card) => { /* 2.4.0: paying with this card */ });
+sdk.on('card:low', (e) => { /* 2.4.0: "Top up your card" shown */ });
 ```
 
 ### Element events: armed and gated (2.3.0)
