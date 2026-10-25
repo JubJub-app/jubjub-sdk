@@ -244,3 +244,59 @@ test('declarative: a refusal gates once and never arms', async () => {
     assert.equal(video.src, '');
   });
 });
+
+// 2026-10-25: an 'error' before the SDK is armed used to resolve the harness
+// as "not gated" and call video.play() with no session open: free playback of
+// a paid piece on any third-party site that relies on the harness. It now
+// gates, and play() runs only on an open session, including on every retry.
+test('declarative: an error before payment is armed gates and never plays, on the first try and on retry', async () => {
+  reset(false);
+  // Any throw no step gates for itself reaches attach()'s outer catch, which
+  // emits a bare 'error' with no session open (here: a step-3 check throws).
+  const proto = ApiClient.prototype as any;
+  const realHas = proto.hasSessionToken;
+  const realEnsure = (Approval.prototype as any).ensureApproved;
+  proto.hasSessionToken = function () { throw new TypeError('unexpected failure before payment'); };
+  try {
+    const video = new FakeVideo();
+    video.dataset.jubjubContentId = 'cnt_1';
+    video.src = 'https://creator.example/public.mp4'; // a host that did NOT hold the source back
+    (JubJub as any)._prepareVideo(video);
+    video.dispatchEvent(new Event('play'));
+    await settle();
+    assert.equal(video.armed.length, 0, 'nothing was paid for, so never armed');
+    assert.equal(video.plays.length, 0, 'no play() after a pre-payment error');
+    assert.equal(video.paused, true);
+    assert.equal(video.gatedEvents.length, 1, 'the harness gates the error');
+
+    // retry through the native play button: same error, still no playback
+    video.dispatchEvent(new Event('play'));
+    await settle();
+    assert.equal(video.plays.length, 0, 'no play() on retry either');
+    assert.equal(video.paused, true);
+    assert.equal(video.gatedEvents.length, 2);
+
+    // payment works on the next retry: armed first, then exactly one play()
+    proto.hasSessionToken = realHas;
+    video.dispatchEvent(new Event('play'));
+    await settle();
+    assert.equal(video.armed.length, 1);
+    assert.equal(video.plays.length, 1, 'plays once payment is armed');
+    assert.equal(video.plays[0].armedSeen, 1, 'armed before play()');
+  } finally {
+    proto.hasSessionToken = realHas;
+    (Approval.prototype as any).ensureApproved = realEnsure;
+  }
+});
+
+test('_isArmed is true only while a session is open', async () => {
+  reset(false);
+  const video = new FakeVideo();
+  const sdk = new JubJub({ showCostOverlay: false, contentId: 'cnt_1' });
+  assert.equal(sdk._isArmed(), false, 'not armed before attach');
+  await sdk.attach('cnt_1', video as any);
+  assert.equal(sdk._isArmed(), true);
+  (sdk as any)._markSessionClosed();
+  assert.equal(sdk._isArmed(), false, 'a closed session is not armed');
+  await sdk.disconnect();
+});

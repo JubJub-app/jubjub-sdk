@@ -163,6 +163,11 @@ export declare class JubJub extends EventEmitter {
      * may start. Once per attach(); a no-op without an open session, so it can
      * never tell a host to attach a source nothing was paid for.
      */
+    /**
+     * True only while a streaming session is open: what the play harness
+     * requires before it may call video.play() on a paid piece.
+     */
+    _isArmed(): boolean;
     private _dispatchArmed;
     private _gatePayment;
     /**
