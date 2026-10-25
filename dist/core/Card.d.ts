@@ -60,6 +60,16 @@ export type CardDecision =
     kind: 'top_up';
     card: CardInfo;
 }
+/**
+ * 2.4.1: no usable card, and the wallet's card is frozen or has a burn
+ * pending. Topping up cannot fix that, so the gate shows the backend's
+ * words for it (card-rail-api.md: "stop and show the backend's message").
+ */
+ | {
+    kind: 'blocked';
+    card: CardInfo;
+    reason: CardBlockReason;
+}
 /** No card at all: "Get a card", with the wallet fallback unless mode 'card'. */
  | {
     kind: 'get_card';
@@ -85,9 +95,12 @@ export declare function qualifyingCards(cards: CardInfo[], minimumMicro: number)
  *     unless onSelectCard picks another of them);
  *   cards, none covering a minute     -> 'top_up' (the highest-balance usable
  *     card, else the highest-balance card);
+ *   no usable card, one frozen or with a burn pending
+ *                                     -> 'blocked' (2.4.1: the backend's words
+ *     for it; topping up a frozen card cannot let it pay);
  *   no card                           -> 'get_card'.
- * A card that is frozen or closing is not "no card": its holder is asked to
- * top up (or sees the backend's words on open), never to buy another.
+ * A card that is frozen or closing is not "no card": its holder is never
+ * asked to buy another.
  */
 export declare function decideCard(cards: CardInfo[], minimumMicro: number, onSelectCard?: SelectCardHook | null): Promise<CardDecision>;
 /**
@@ -102,6 +115,27 @@ export declare function withReturn(url: string, pageUrl: string | null | undefin
  * referral. Throws on a non-2xx answer; the caller gates (never guesses).
  */
 export declare function fetchCards(apiUrl: string, holder: string, platformKey?: string | null): Promise<CardsResponse>;
+/** Why a held card cannot pay at detection (2.4.1). */
+export type CardBlockReason = 'card_frozen' | 'card_closing';
+/**
+ * A card session the backend ended for the card itself (2.4.1): a segment
+ * answered end_reason card_empty, card_frozen, card_closing, card_transferred
+ * or card_not_found. Never set on a hub session.
+ */
+export declare function isCardEndReason(endReason: unknown): boolean;
+/**
+ * The gate for a card that cannot pay for a reason a top-up does not fix:
+ * frozen, closing (burn requested), transferred away, not found, or a
+ * card_* reason this bundle does not know. The sub is the backend's own
+ * message for that reason (card_funding.py _MESSAGES), so the words match
+ * what the open gate says. No approval, no card link: the retry reads the
+ * cards again.
+ */
+export declare function cardStoppedText(reason: string): {
+    title: string;
+    sub: string;
+    action: string;
+};
 /** The two prompts a card holder (or would-be holder) can see. */
 export type CardPromptKind = 'top_up' | 'get_card';
 /** What the SDK attaches to a 'payment:required' error that is a card prompt. */

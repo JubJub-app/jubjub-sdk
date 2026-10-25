@@ -60,6 +60,12 @@ export type CardDecision =
   | { kind: 'card'; card: CardInfo; qualifying: CardInfo[] }
   /** Cards exist but none covers a minute: "Top up your card". */
   | { kind: 'top_up'; card: CardInfo }
+  /**
+   * 2.4.1: no usable card, and the wallet's card is frozen or has a burn
+   * pending. Topping up cannot fix that, so the gate shows the backend's
+   * words for it (card-rail-api.md: "stop and show the backend's message").
+   */
+  | { kind: 'blocked'; card: CardInfo; reason: CardBlockReason }
   /** No card at all: "Get a card", with the wallet fallback unless mode 'card'. */
   | { kind: 'get_card' };
 
@@ -138,9 +144,12 @@ export function qualifyingCards(cards: CardInfo[], minimumMicro: number): CardIn
  *     unless onSelectCard picks another of them);
  *   cards, none covering a minute     -> 'top_up' (the highest-balance usable
  *     card, else the highest-balance card);
+ *   no usable card, one frozen or with a burn pending
+ *                                     -> 'blocked' (2.4.1: the backend's words
+ *     for it; topping up a frozen card cannot let it pay);
  *   no card                           -> 'get_card'.
- * A card that is frozen or closing is not "no card": its holder is asked to
- * top up (or sees the backend's words on open), never to buy another.
+ * A card that is frozen or closing is not "no card": its holder is never
+ * asked to buy another.
  */
 export async function decideCard(
   cards: CardInfo[],
@@ -151,8 +160,11 @@ export async function decideCard(
   if (sorted.length === 0) return { kind: 'get_card' };
   const qualifying = qualifyingCards(sorted, minimumMicro);
   if (qualifying.length === 0) {
-    const card = sorted.find((c) => c.usable) ?? sorted[0];
-    return { kind: 'top_up', card };
+    const usable = sorted.find((c) => c.usable);
+    if (usable) return { kind: 'top_up', card: usable };
+    const held = sorted.find((c) => c.frozen || c.burn_requested_at > 0);
+    if (held) return { kind: 'blocked', card: held, reason: held.frozen ? 'card_frozen' : 'card_closing' };
+    return { kind: 'top_up', card: sorted[0] };
   }
   let card = qualifying[0];
   if (qualifying.length > 1 && typeof onSelectCard === 'function') {
@@ -205,6 +217,61 @@ export async function fetchCards(
 function usd(micro: number): string {
   const n = Number(micro);
   return `$${(Number.isFinite(n) ? n / 1_000_000 : 0).toFixed(2)}`;
+}
+
+/** Why a held card cannot pay at detection (2.4.1). */
+export type CardBlockReason = 'card_frozen' | 'card_closing';
+
+/**
+ * A card session the backend ended for the card itself (2.4.1): a segment
+ * answered end_reason card_empty, card_frozen, card_closing, card_transferred
+ * or card_not_found. Never set on a hub session.
+ */
+export function isCardEndReason(endReason: unknown): boolean {
+  return typeof endReason === 'string' && /^card_[a-z_]+$/.test(endReason);
+}
+
+/**
+ * The gate for a card that cannot pay for a reason a top-up does not fix:
+ * frozen, closing (burn requested), transferred away, not found, or a
+ * card_* reason this bundle does not know. The sub is the backend's own
+ * message for that reason (card_funding.py _MESSAGES), so the words match
+ * what the open gate says. No approval, no card link: the retry reads the
+ * cards again.
+ */
+export function cardStoppedText(reason: string): { title: string; sub: string; action: string } {
+  switch (reason) {
+    case 'card_frozen':
+      return {
+        title: 'Your card is frozen',
+        sub: 'This card is frozen. Unfreeze it on your card page to watch with it.',
+        action: 'Try again',
+      };
+    case 'card_closing':
+      return {
+        title: 'Your card is closing',
+        sub: "This card is being redeemed, so it can't pay for viewing. Cancel the redemption to watch with it.",
+        action: 'Try again',
+      };
+    case 'card_transferred':
+      return {
+        title: 'This card is no longer in your wallet',
+        sub: 'Your wallet no longer holds this card. Try again to look for another card.',
+        action: 'Try again',
+      };
+    case 'card_not_found':
+      return {
+        title: "We couldn't find your card",
+        sub: "That card doesn't exist. Try again to look for another card.",
+        action: 'Try again',
+      };
+    default:
+      return {
+        title: 'Your card stopped paying',
+        sub: 'This card cannot pay for streaming right now. Try again once this is resolved.',
+        action: 'Try again',
+      };
+  }
 }
 
 /** The two prompts a card holder (or would-be holder) can see. */

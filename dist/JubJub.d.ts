@@ -187,7 +187,8 @@ export declare class JubJub extends EventEmitter {
     /** "Top up your card": card:low, then the gate with the top-up link. */
     private _gateTopUp;
     /**
-     * Find the card to pay with (2.4.0, after Steps 2 and 3). Returns the card,
+     * Find the card to pay with (2.4.0; after Step 2 and, since 2.4.1, before
+     * the Step 3 signature: the cards route is public). Returns the card,
      * or null once it has gated: "Top up your card" (cards, none covering one
      * minute at this price), "Get a card" (none; with "Pay from your wallet
      * instead" in auto mode), or a retry when the cards could not be read.
@@ -259,6 +260,16 @@ export declare class JubJub extends EventEmitter {
      * the card's top-up link; the retry re-opens, reading the cards again.
      */
     private _cardEmpty;
+    /**
+     * A card session's segment came back closed for the card (2.4.1):
+     * card_frozen, card_closing, card_transferred, card_not_found, or a card_*
+     * reason this bundle does not know. The session is already marked closed.
+     * The card is dropped and the next open reads the cards again. While the
+     * media plays: pause and gate with the backend's words for the reason (no
+     * approval, no card link), the retry re-opens. Paused or ended media just
+     * waits: the next `play` re-opens, and the cards read then decide.
+     */
+    private _cardStopped;
     /**
      * The session is closed and the viewer is watching (or wants to): open a
      * new session from the pot. The closed session's tracker, loop and handlers

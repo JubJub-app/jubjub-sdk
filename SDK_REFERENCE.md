@@ -1,6 +1,6 @@
 # JubJub SDK Reference
 
-**Version:** 2.4.0
+**Version:** 2.4.1
 **Chain:** Base (Coinbase L2) — `network: 'mainnet'` → Base mainnet (default), `network: 'testnet'` → Base Sepolia
 **Status:** Live on Base mainnet. Omitting `network` means mainnet; pass `network: 'testnet'` to develop against Sepolia.
 
@@ -58,7 +58,7 @@ const { content_id } = await res.json();
 
 That's it. `stable/` moves only after a release has passed the full test
 suite. To pin a version, load
-`https://jubjub-app.github.io/jubjub-sdk/v/2.4.0/jubjub-sdk.umd.js` instead.
+`https://jubjub-app.github.io/jubjub-sdk/v/2.4.1/jubjub-sdk.umd.js` instead.
 The older `.../jubjub-sdk/dist/jubjub-sdk.umd.js` address is legacy (main's
 unpinned build output); it keeps working, but new integrations load `stable/`
 or `v/<version>/`.
@@ -428,6 +428,21 @@ dashboard's /watch and /embed behave identically.
   check on every push and pull request refuses a tree where they differ. Load
   `https://jubjub-app.github.io/jubjub-sdk/stable/jubjub-sdk.umd.js`.
 
+2.4.1 (card audit fixes, 2026-10-25). Bugs found walking the card flow as a
+viewer would, before any real card was used. "Get a card" and "Top up your
+card" now show before the viewer-token signature (the cards route is public;
+minting a card needs only a wallet); a funded card still signs once before
+its session opens, and the approve flow's order is unchanged. A frozen or
+closing card is no longer told to top up (a loop: the top-up could never let
+it pay); it shows the backend's words. A card session the backend ends
+between segments (`card_frozen`, `card_closing`, `card_transferred`,
+`card_not_found`) pauses with those words instead of re-opening silently
+against the same card; any `card_*` end reason counts as closed even while
+the backend's close is still settling. A Tier 2 gate on a card session
+retries by opening a new session (reading the cards again), so "Try again"
+after a top-up no longer refreshes a session that has ended. Hub sessions
+and pieces that do not take cards are unchanged.
+
 2.4.0 (card payments, 2026-10-25). The JubJub card, as Tom decided it: a
 funded card just watches, the only prompts are "Top up your card" and "Get a
 card" (with "Pay from your wallet instead"), and nothing changes where the
@@ -492,8 +507,10 @@ JubJub.init({
 });
 ```
 
-After the wallet connects and the viewer token is held (Steps 2 and 3), the
-SDK reads `GET /v2/public/cards?holder=<wallet>` (header
+After the wallet connects (Step 2), and BEFORE the viewer-token signature
+(Step 3, since 2.4.1: the cards route is public, so "Get a card" and "Top up
+your card" need only a wallet; the signature is asked for once a card will
+pay, or when the viewer picks the wallet instead), the SDK reads `GET /v2/public/cards?holder=<wallet>` (header
 `X-JubJub-Platform-Key` when `init()` had one, so the mint link carries the
 site's referral) and decides:
 
@@ -501,6 +518,7 @@ site's referral) and decides:
 |---|---|
 | A usable card (not frozen, no burn pending) whose balance covers one minute at this price (`one_minute_micro`) | Nothing. Step 4 (approval) is skipped and the session opens with `card_token_id`. Several: the highest balance, unless `onSelectCard` returns another of them (or its `token_id`). |
 | Cards, none covering one minute | "Top up your card": a link to the card's `top_up_url` + `?return=<page>` (new tab) and "Try again", which reads the cards again. |
+| No usable card, and one is frozen or has a burn pending (2.4.1) | The backend's words for it ("Your card is frozen", "Your card is closing") and "Try again", which reads the cards again. No top-up link: a top-up cannot let a frozen card pay. No approval. |
 | No card | One "Get a card" prompt: a link to `mint_url` + `&return=<page>` (new tab), "Try again", and "Pay from your wallet instead", which runs the approve flow unchanged for that video from then on. `payerMode: 'card'` never offers the wallet. |
 
 - `payerMode: 'wallet'` never looks for a card.
@@ -512,7 +530,13 @@ site's referral) and decides:
   (`FundingRequiredError.isCardRefusal`, `tokenId`, `topUpUrl`).
 - Charged only while the video plays (the same segment metering). A segment
   answered `end_reason: "card_empty"` pauses and shows "Top up your card"; its
-  retry reads the cards again. `cap_reached` rolls over silently with the same
+  retry reads the cards again. A segment answered `end_reason` `card_frozen`, `card_closing`,
+  `card_transferred` or `card_not_found` (2.4.1: the backend ended the
+  session for the card between segments) stops metering at once; while
+  playing it pauses under a gate with the backend's words for the reason (no
+  approval, no silent re-open), and the retry, or the next play, reads the
+  cards again. A Tier 2 gate on a card session retries by opening a new
+  session, never by refreshing the ended one. `cap_reached` rolls over silently with the same
   `card_token_id` (no second cards call).
 - The overlay on a card session also shows what the card can still cover
   (`card_balance_micro` from the session open, minus the cost so far) and the
@@ -661,7 +685,7 @@ the root of `main`, so three addresses exist:
 | Address | What it is |
 |---|---|
 | `https://jubjub-app.github.io/jubjub-sdk/stable/jubjub-sdk.umd.js` | The release to load. Moves only after `npm run release` has passed the full test suite. |
-| `https://jubjub-app.github.io/jubjub-sdk/v/2.4.0/jubjub-sdk.umd.js` | That release, pinned. One folder per version. |
+| `https://jubjub-app.github.io/jubjub-sdk/v/2.4.1/jubjub-sdk.umd.js` | That release, pinned. One folder per version. |
 | `https://jubjub-app.github.io/jubjub-sdk/dist/jubjub-sdk.umd.js` | Legacy: main's build output, unpinned. Kept working. |
 
 `npm run release` runs the tests, builds, and copies `dist/jubjub-sdk.umd.js`

@@ -284,8 +284,22 @@ test('card selection: cards below a minute are a top-up, none at all is get-a-ca
   const low = await decideCard([card(1, 59_999), card(2, 10_000)], 60_000);
   assert.equal(low.kind, 'top_up');
   assert.equal((low as any).card.token_id, 1);
+  // 2.4.1: a frozen or closing card is 'blocked' (the backend's words), not
+  // a top-up a frozen card cannot use; never "Get a card" either.
   const frozenOnly = await decideCard([card(3, 5_000_000, { frozen: true, usable: false })], 60_000);
-  assert.equal(frozenOnly.kind, 'top_up', 'a holder whose card cannot pay is not told to buy another');
+  assert.equal(frozenOnly.kind, 'blocked', 'a holder whose card cannot pay is not told to buy another');
+  assert.equal((frozenOnly as any).reason, 'card_frozen');
+  const closing = await decideCard([card(3, 5_000_000, { burn_requested_at: 1_700_000_000, usable: false })], 60_000);
+  assert.equal(closing.kind, 'blocked');
+  assert.equal((closing as any).reason, 'card_closing');
+  const lowAndFrozen = await decideCard(
+    [card(3, 5_000_000, { frozen: true, usable: false }), card(4, 10_000)],
+    60_000,
+  );
+  assert.equal(lowAndFrozen.kind, 'top_up', 'a usable low card is still the top-up');
+  assert.equal((lowAndFrozen as any).card.token_id, 4);
+  const empty = await decideCard([card(5, 0, { usable: false })], 60_000);
+  assert.equal(empty.kind, 'top_up', 'an empty card that is not frozen is a top-up');
   assert.deepEqual(await decideCard([], 60_000), { kind: 'get_card' });
 });
 
@@ -662,4 +676,207 @@ test('overlay on a card session shows the card balance left and the per-second p
   const plain = await attachWith({ showCostOverlay: true });
   assert.equal(findAll(plain.video.parentElement?.parentElement ?? null, 'data-jubjub-card').length, 0);
   await plain.sdk.disconnect();
+});
+
+// ===========================================================================
+// 2.4.1 audit fixes
+// ===========================================================================
+
+import { segmentOutcome } from '../src/sessionLifecycle';
+import { parseFundingError } from '../src/fundingErrors';
+import { cardStoppedText, isCardEndReason } from '../src/core/Card';
+
+/** Run `fn` with no page token and Step 3 stubbed, recording the order of steps. */
+async function withoutToken(fn: (order: string[]) => Promise<void>) {
+  const order: string[] = [];
+  const proto = JubJub.prototype as any;
+  const realMint = proto._mintViewerToken;
+  const realApprove = (Approval.prototype as any).ensureApproved;
+  proto._mintViewerToken = async () => { order.push('sign'); return true; };
+  (Approval.prototype as any).ensureApproved = async () => { order.push('approve'); approveCalls += 1; return false; };
+  JubJub.setSessionToken(null);
+  try {
+    await fn(order);
+  } finally {
+    proto._mintViewerToken = realMint;
+    (Approval.prototype as any).ensureApproved = realApprove;
+    JubJub.setSessionToken('jj_test');
+  }
+}
+
+test('no card: "Get a card" shows before any signature (the cards route is public)', async () => {
+  await withoutToken(async (order) => {
+    reset(cardInfo(), []);
+    const { seen } = await attachWith();
+    assert.equal(seen['payment:required'][0].card.kind, 'get_card');
+    assert.deepEqual(order, [], 'no viewer-token signature, no approval');
+    assert.equal(calls.filter((c) => c.url.includes('/wallet-nonce')).length, 0);
+
+    reset(cardInfo(), [card(7, 20_000)]);
+    order.length = 0;
+    const low = await attachWith();
+    assert.equal(low.seen['payment:required'][0].card.kind, 'top_up');
+    assert.deepEqual(order, [], 'the top-up prompt needs no signature either');
+  });
+});
+
+test('funded card without a page token: lookup, then the signature, then the open; no approval', async () => {
+  await withoutToken(async (order) => {
+    reset(cardInfo(), [card(7, 2_500_000)]);
+    const { sdk, seen } = await attachWith();
+    assert.equal(seen.ready.length, 1);
+    assert.deepEqual(order, ['sign']);
+    const lookupAt = calls.findIndex((c) => c.url.includes('/v2/public/cards?holder='));
+    const openAt = calls.findIndex((c) => c.url.endsWith('/v2/streaming/sessions'));
+    assert.ok(lookupAt >= 0 && openAt > lookupAt);
+    assert.equal(sessionOpens()[0].body.card_token_id, 7);
+    await sdk.disconnect();
+  });
+});
+
+test('hub piece without a page token: the order is unchanged (sign, then approve)', async () => {
+  await withoutToken(async (order) => {
+    reset(cardInfo({ card_accepted: false }), [card(7, 2_500_000)]);
+    const { sdk } = await attachWith();
+    assert.deepEqual(order, ['sign', 'approve']);
+    assert.equal(cardLookups().length, 0);
+    await sdk.disconnect();
+  });
+});
+
+test('wallet fallback without a page token: the order is unchanged (sign, then approve)', async () => {
+  await withoutToken(async (order) => {
+    reset(cardInfo(), []);
+    const { sdk } = await attachWith({ payerMode: 'wallet' });
+    assert.deepEqual(order, ['sign', 'approve']);
+    assert.equal(cardLookups().length, 0);
+    await sdk.disconnect();
+  });
+});
+
+test('frozen or closing card at detection: the backend words, no top-up, no approval, nothing opened', async () => {
+  for (const [extra, title] of [
+    [{ frozen: true, usable: false }, 'Your card is frozen'],
+    [{ burn_requested_at: 1_700_000_000, usable: false }, 'Your card is closing'],
+  ] as const) {
+    reset(cardInfo(), [card(7, 5_000_000, extra as any)]);
+    const { seen } = await attachWith();
+    const err = seen['payment:required'][0];
+    assert.equal(err.message, title);
+    assert.equal(err.card, undefined, 'no "Top up your card" link');
+    assert.equal(seen['card:low'].length, 0);
+    assert.equal(approveCalls, 0);
+    assert.equal(sessionOpens().length, 0);
+  }
+});
+
+test('segment closed for the card mid-play: pause and say so; no silent re-open, no approval', async () => {
+  for (const reason of ['card_frozen', 'card_closing', 'card_transferred', 'card_not_found']) {
+    reset(cardInfo(), [card(7, 2_500_000)]);
+    const { video, sdk, seen } = await attachWith();
+    video.paused = false;
+    segmentAnswer = { session_id: 'sess_1', segment_count: 3, amount_settled: 0, status: 'closed', end_reason: reason };
+    for (let i = 0; i < 28; i++) video.tick(0.25);
+    await settle();
+
+    assert.equal(video.paused, true, `${reason}: paused`);
+    assert.equal(sessionOpens().length, 1, `${reason}: no silent re-open`);
+    const prompt = seen['payment:required'].at(-1);
+    assert.equal(prompt.message, cardStoppedText(reason).title);
+    assert.equal(prompt.card, undefined);
+    const gate = findAll(video.parentElement, 'data-jubjub-gate')[0];
+    assert.ok(gate, `${reason}: a gate`);
+    assert.equal(findAll(gate, 'data-jubjub-card-link').length, 0);
+    assert.equal(findAll(gate, 'data-jubjub-wallet-fallback').length, 0);
+
+    // nothing more goes to the closed session
+    const before = segments().length;
+    video.paused = false;
+    for (let i = 0; i < 28; i++) video.tick(0.25);
+    await settle();
+    assert.equal(segments().length, before);
+    video.pause();
+
+    // the viewer fixes it and retries: the cards are read again
+    segmentAnswer = { session_id: 'x', segment_count: 1, amount_settled: 0, status: 'active', end_reason: null };
+    const lookups = cardLookups().length;
+    findAll(gate, 'data-jubjub-retry')[0].dispatchEvent(new Event('click'));
+    await settle();
+    assert.equal(cardLookups().length, lookups + 1, `${reason}: re-read on retry`);
+    assert.equal(sessionOpens().length, 2);
+    assert.equal(approveCalls, 0);
+    await sdk.disconnect();
+  }
+});
+
+test('segment closed for the card while paused: no gate yet; the next play re-reads the cards', async () => {
+  reset(cardInfo(), [card(7, 2_500_000)]);
+  const { video, sdk, seen } = await attachWith();
+  video.paused = false;
+  segmentAnswer = { session_id: 'sess_1', segment_count: 1, amount_settled: 0, status: 'closed', end_reason: 'card_transferred' };
+  for (let i = 0; i < 24; i++) video.tick(0.25);
+  video.pause();
+  await settle();
+  assert.equal(seen['payment:required'].length, 0);
+  // the wallet now holds another card
+  segmentAnswer = { session_id: 'x', segment_count: 1, amount_settled: 0, status: 'active', end_reason: null };
+  cardsAnswer.body.cards = [card(12, 3_000_000)];
+  const lookups = cardLookups().length;
+  video.play();
+  await settle();
+  assert.equal(cardLookups().length, lookups + 1);
+  assert.equal(sessionOpens().at(-1)!.body.card_token_id, 12);
+  assert.equal(approveCalls, 0);
+  await sdk.disconnect();
+});
+
+test('segmentOutcome: a card end_reason is closed even while the close settles; hub answers unchanged', () => {
+  const r = (status: string, end_reason: string | null) =>
+    ({ session_id: 's', segment_count: 1, amount_settled: 0, status, end_reason });
+  assert.equal(segmentOutcome(r('active', 'card_empty')), 'closed');
+  assert.equal(segmentOutcome(r('active', 'card_frozen')), 'closed');
+  assert.equal(segmentOutcome(r('closed', 'card_closing')), 'closed');
+  assert.equal(segmentOutcome(r('active', null)), 'continue');
+  assert.equal(segmentOutcome(r('active', 'cap_reached')), 'continue', 'hub: as before');
+  assert.equal(segmentOutcome(r('closed', 'cap_reached')), 'rollover');
+  assert.equal(segmentOutcome(r('closed', 'tab_unpaid')), 'closed');
+  assert.ok(isCardEndReason('card_transferred'));
+  assert.ok(!isCardEndReason('cap_reached'));
+  assert.ok(!isCardEndReason(null));
+});
+
+test('card stop copy: no em dash, straight quotes, never "Top up" for what a top-up cannot fix', () => {
+  for (const reason of ['card_frozen', 'card_closing', 'card_transferred', 'card_not_found', 'card_new_thing']) {
+    const t = cardStoppedText(reason);
+    for (const s of [t.title, t.sub, t.action]) {
+      assert.ok(!s.includes('—'), s);
+      assert.ok(!/[‘’“”]/.test(s), s);
+      assert.ok(!/top up/i.test(s), s);
+    }
+  }
+});
+
+test('Tier 2 card refusal on refresh: the retry opens a new session, not a refresh of the dead one', async () => {
+  reset(cardInfo(), [card(7, 2_500_000)]);
+  const { video, sdk, seen } = await attachWith();
+  video.paused = false;
+  const refusal = parseFundingError(402, JSON.stringify({ detail: {
+    reason: 'card_balance_low', message: 'Your card is too low to keep watching.', token_id: 7,
+    required_micro: 60_000, balance_micro: 0, top_up_url: 'https://studio.jubjubapp.com/card/7',
+  } }));
+  assert.ok(refusal);
+  (sdk as any)._gateMidPlayback(refusal);
+  const prompt = seen['payment:required'].at(-1);
+  assert.equal(prompt.card.kind, 'top_up');
+  const gate = findAll(video.parentElement, 'data-jubjub-gate')[0];
+  const refreshes = calls.filter((c) => c.url.endsWith('/playback-url')).length;
+  const lookups = cardLookups().length;
+  findAll(gate, 'data-jubjub-retry')[0].dispatchEvent(new Event('click'));
+  await settle();
+  assert.equal(calls.filter((c) => c.url.endsWith('/playback-url')).length, refreshes, 'no refresh of the dead session');
+  assert.equal(cardLookups().length, lookups + 1, 'the cards are read again');
+  assert.equal(sessionOpens().length, 2);
+  assert.equal(sessionOpens()[1].body.card_token_id, 7);
+  assert.equal(approveCalls, 0);
+  await sdk.disconnect();
 });

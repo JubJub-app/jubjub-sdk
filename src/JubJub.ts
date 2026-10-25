@@ -21,7 +21,9 @@ import {
 } from './streamingErrors';
 import {
   cardPromptText,
+  cardStoppedText,
   decideCard,
+  isCardEndReason,
   oneMinuteMicro,
   withReturn,
   type CardInfo,
@@ -1348,7 +1350,8 @@ export class JubJub extends EventEmitter {
   }
 
   /**
-   * Find the card to pay with (2.4.0, after Steps 2 and 3). Returns the card,
+   * Find the card to pay with (2.4.0; after Step 2 and, since 2.4.1, before
+   * the Step 3 signature: the cards route is public). Returns the card,
    * or null once it has gated: "Top up your card" (cards, none covering one
    * minute at this price), "Get a card" (none; with "Pay from your wallet
    * instead" in auto mode), or a retry when the cards could not be read.
@@ -1388,6 +1391,14 @@ export class JubJub extends EventEmitter {
       return decision.card;
     }
     this.selectedCard = null;
+    if (decision.kind === 'blocked') {
+      // 2.4.1: frozen or closing. A top-up cannot fix it; the backend's words
+      // for the reason, no approval, no link; the retry reads the cards again.
+      this.cardReread = true;
+      const text = cardStoppedText(decision.reason);
+      this._gatePayment(text.title, text.sub, new Error(decision.reason), text.action);
+      return null;
+    }
     if (decision.kind === 'top_up') {
       this._gateTopUp(
         {
@@ -1525,9 +1536,22 @@ export class JubJub extends EventEmitter {
         this.selectedCard = null;
       }
     }
+    // 2.4.1: on a CARD session the retry opens a new session (reading the
+    // cards again) instead of asking for another URL on this one. A card
+    // session the backend ended (card_empty, frozen, closing, transferred)
+    // can never be refreshed, so after a top-up the old retry answered 403
+    // forever and the viewer was stuck under the gate. Never an approval.
+    const onCard = this.session?.cardTokenId != null;
+    if (onCard) this.cardReread = true;
     this.midPlaybackGate = _createPaymentGate(
       video,
       () => {
+        if (onCard) {
+          this.midPlaybackGate?.remove();
+          this.midPlaybackGate = null;
+          void this._reopenSession(reopenModeFor('replay'));
+          return;
+        }
         // A 402 allowance stop: approve the backend-named spender first, then
         // ask for a URL once. The refresher itself never retries a 402.
         const approval = this.approval;
@@ -1672,30 +1696,35 @@ export class JubJub extends EventEmitter {
       //    viewer in (init({ sessionToken }) / setSessionToken), or an
       //    earlier video on this page already minted one. One signature per
       //    page, never one per video.
-      if (this.api.hasSessionToken()) {
-        console.log('[JubJub] Step 3: session token already held — no signature needed');
-      } else {
-        if (!(await this._mintViewerToken(contentId, address))) return;
-        console.log('[JubJub] Step 3 done');
-      }
-
-      // 3.5 The card (2.4.0). Only where playback-info says this piece takes
+      // 2.5 The card (2.4.0). Only where playback-info says this piece takes
       //     cards (card_accepted: true); false or absent (an older backend)
       //     runs today's flow untouched: no cards call, no card_token_id. A
       //     usable card covering one minute skips Step 4 entirely. A re-open
       //     (cap rollover, replay) keeps the card already chosen; after a
       //     top-up prompt the cards are read again.
+      //     2.4.1: BEFORE Step 3. The cards route is public, so "Get a card"
+      //     and "Top up your card" need only the connected wallet, never the
+      //     viewer-token signature (minting a card needs only a wallet). The
+      //     signature is asked for only once a card will pay (or the wallet
+      //     fallback runs, which is today's order: Step 3 then Step 4).
       let card: CardInfo | null = null;
       const payerMode = this._payerMode();
       if (this.contentInfo.card_accepted === true && payerMode !== 'wallet' && !this.cardNotAccepted) {
         if (this.selectedCard && !this.cardReread) {
           card = this.selectedCard;
-          console.log('[JubJub] Step 3.5: paying with card', card.token_id);
+          console.log('[JubJub] Step 2.5: paying with card', card.token_id);
         } else {
-          console.log('[JubJub] Step 3.5: looking for a card...');
+          console.log('[JubJub] Step 2.5: looking for a card...');
           card = await this._detectCard(address, payerMode);
           if (!card) return;
         }
+      }
+
+      if (this.api.hasSessionToken()) {
+        console.log('[JubJub] Step 3: session token already held — no signature needed');
+      } else {
+        if (!(await this._mintViewerToken(contentId, address))) return;
+        console.log('[JubJub] Step 3 done');
       }
 
       // 4. Approve USDC (never on a card)
@@ -2086,6 +2115,14 @@ export class JubJub extends EventEmitter {
       this._cardEmpty();
       return;
     }
+    // 2.4.1: the backend ended this card session for the card itself
+    // (frozen, closing, transferred, not found). Not a silent re-open: that
+    // would open again with the same card and be refused. Pause and say why;
+    // the retry reads the cards again.
+    if (isCardEndReason(e.response?.end_reason)) {
+      this._cardStopped(String(e.response?.end_reason));
+      return;
+    }
     if (!video || !mustReopenNow(video)) return;
     void this._reopenSession(reopenModeFor(e.outcome));
   }
@@ -2132,6 +2169,44 @@ export class JubJub extends EventEmitter {
     err.sub = text.sub;
     err.action = text.action;
     err.card = prompt;
+    this.emit('payment:required', err);
+  }
+
+  /**
+   * A card session's segment came back closed for the card (2.4.1):
+   * card_frozen, card_closing, card_transferred, card_not_found, or a card_*
+   * reason this bundle does not know. The session is already marked closed.
+   * The card is dropped and the next open reads the cards again. While the
+   * media plays: pause and gate with the backend's words for the reason (no
+   * approval, no card link), the retry re-opens. Paused or ended media just
+   * waits: the next `play` re-opens, and the cards read then decide.
+   */
+  private _cardStopped(reason: string): void {
+    const video = this.video;
+    this.selectedCard = null;
+    this.cardReread = true;
+    if (!video || !mustReopenNow(video)) return;
+    try { video.pause(); } catch { /* ignore */ }
+    if (this.midPlaybackGate) return;
+    const text = cardStoppedText(reason);
+    const contentId = this.attachedContentId ?? this.options.contentId ?? null;
+    this.midPlaybackGate = _createPaymentGate(
+      video,
+      () => {
+        this.midPlaybackGate?.remove();
+        this.midPlaybackGate = null;
+        void this._reopenSession(reopenModeFor('replay'));
+      },
+      text.title,
+      text.sub,
+      text.action,
+      claimUrlFor(contentId ?? undefined),
+    );
+    _dispatchGated(video, contentId, text.title, text.sub);
+    const err = new Error(text.title) as Error & { sub?: string; action?: string; cause?: unknown };
+    err.sub = text.sub;
+    err.action = text.action;
+    err.cause = new Error(reason);
     this.emit('payment:required', err);
   }
 
