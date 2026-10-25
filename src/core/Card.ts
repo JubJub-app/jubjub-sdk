@@ -12,6 +12,7 @@
  * The card contract address is never hardcoded here: the backend reads the
  * cards live from the chain and serves them through GET /v2/public/cards.
  */
+import { PREFLIGHT_FLOOR_MICRO } from '../allowancePolicy';
 
 /** 'auto' (default): use a card when the piece takes one, else the wallet.
  *  'wallet': never look for a card (today's approve flow).
@@ -22,8 +23,18 @@ export type PayerMode = 'auto' | 'wallet' | 'card';
 export interface CardInfo {
   token_id: number;
   holder: string;
-  /** Micro-USDC (6 decimals). */
+  /**
+   * What the card can really spend, micro-USDC (6 decimals): the backend's
+   * available_micro, its on-chain balance less viewing already watched but not
+   * yet charged (cards are charged in batches). Every decision and every
+   * figure shown uses this. Older backends send no available_micro, and then
+   * it is the on-chain balance.
+   */
   balance_micro: number;
+  /** The on-chain balance (2.5.1). */
+  onchain_balance_micro: number;
+  /** Watched, not yet charged (2.5.1; 0 from older backends). */
+  pending_micro: number;
   frozen: boolean;
   /** Unix seconds; 0 = no burn requested. */
   burn_requested_at: number;
@@ -89,7 +100,9 @@ export function toCardInfo(raw: unknown): CardInfo | null {
   return {
     token_id: tokenId,
     holder: typeof r.holder === 'string' ? r.holder : '',
-    balance_micro: Math.max(0, int(r.balance_micro)),
+    balance_micro: Math.max(0, int(r.available_micro ?? r.balance_micro)),
+    onchain_balance_micro: Math.max(0, int(r.balance_micro)),
+    pending_micro: Math.max(0, int(r.pending_micro)),
     frozen: r.frozen === true,
     burn_requested_at: int(r.burn_requested_at),
     burnable_at: Number.isFinite(burnableAt) ? burnableAt : null,
@@ -317,6 +330,13 @@ export function cardPromptText(
 }
 
 /**
+ * The one line a card holder reads beside their balance (Tom, 2026-10-26):
+ * why the balance moves in steps rather than every second.
+ */
+export const CARD_BATCH_NOTE =
+  "You're only charged for what you watch. Charges are grouped together to keep network fees low, so your balance updates in batches.";
+
+/**
  * The overlay's card line: what the card can still cover for this session
  * (card_balance_micro at open, minus the cost so far) and the per-second
  * price. Amounts come from the backend and the content's price.
@@ -335,4 +355,14 @@ export function cardOverlayText(
     perSecond: `$${(Number.isFinite(perSecond) ? perSecond : 0).toFixed(4)}/s`,
     remainingUsdc,
   };
+}
+
+/**
+ * Whether "Top up your card" also offers "Pay from your wallet instead"
+ * (Tom, 2026-10-26): in auto payer mode, when the wallet's standing approval
+ * already covers the $0.50 floor, so the fallback asks for no approval.
+ * `allowanceMicro` null means the allowance could not be read: no offer.
+ */
+export function offerWalletOnTopUp(mode: string, allowanceMicro: bigint | null): boolean {
+  return mode === 'auto' && allowanceMicro !== null && allowanceMicro >= PREFLIGHT_FLOOR_MICRO;
 }

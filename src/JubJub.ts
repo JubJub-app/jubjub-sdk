@@ -34,6 +34,7 @@ import {
   cardStoppedText,
   decideCard,
   isCardEndReason,
+  offerWalletOnTopUp,
   oneMinuteMicro,
   withReturn,
   type CardInfo,
@@ -1466,6 +1467,7 @@ export class JubJub extends EventEmitter {
   private _gateTopUp(
     fields: { tokenId: number | null; balanceMicro: number | null; requiredMicro: number | null; topUpUrl: string | null; message?: string | null },
     cause?: unknown,
+    walletFallback = false,
   ): void {
     this.cardReread = true;
     const topUpUrl = this._topUpUrl(fields.topUpUrl);
@@ -1480,7 +1482,7 @@ export class JubJub extends EventEmitter {
       kind: 'top_up',
       url: topUpUrl,
       linkText: text.linkText,
-      walletFallback: false,
+      walletFallback,
       tokenId: fields.tokenId,
     });
   }
@@ -1544,6 +1546,7 @@ export class JubJub extends EventEmitter {
           topUpUrl: decision.card.top_up_url,
         },
         new Error('card balance below one minute'),
+        offerWalletOnTopUp(mode, mode === 'auto' ? await this._standingAllowance() : null),
       );
       return null;
     }
@@ -1556,6 +1559,27 @@ export class JubJub extends EventEmitter {
       tokenId: null,
     });
     return null;
+  }
+
+  /**
+   * The wallet's current allowance to the streaming spender, or null when it
+   * cannot be read (no wallet, unsupported chain, RPC failure). Read only to
+   * decide whether a low card also offers the wallet; never prompts.
+   */
+  private async _standingAllowance(): Promise<bigint | null> {
+    const info = this.contentInfo;
+    if (!info) return null;
+    try {
+      return await new Approval(this.wallet, {
+        usdc_address: info.usdc_address,
+        payment_router: info.payment_router,
+        chain_id: info.chain_id,
+        price_per_minute_usdc: info.price_per_minute_usdc,
+        standing_allowance_usd: _initStreamingAllowanceUsd,
+      }).currentAllowance();
+    } catch {
+      return null;
+    }
   }
 
   /**

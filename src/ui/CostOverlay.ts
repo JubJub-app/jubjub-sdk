@@ -1,5 +1,5 @@
 import type { CostInfo } from '../types';
-import { cardOverlayText } from '../core/Card';
+import { CARD_BATCH_NOTE, cardOverlayText } from '../core/Card';
 
 type Position = 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left';
 
@@ -107,6 +107,8 @@ export class CostOverlay {
       sep.textContent = '·';
       this.cardEl = document.createElement('span');
       this.cardEl.setAttribute('data-jubjub-card', 'true');
+      // The info text on the balance: why it updates in batches.
+      this.cardEl.title = CARD_BATCH_NOTE;
       this.cardEl.style.cssText = 'font-family:ui-monospace,monospace;opacity:0.85;';
       // After the time, before the brand link.
       const brand = this.timeEl.nextSibling;

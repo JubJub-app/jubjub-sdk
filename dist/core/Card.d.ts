@@ -1,17 +1,3 @@
-/**
- * The JubJub card (2.4.0): a viewer whose wallet holds a funded card just
- * watches. No approval, no popup, no message; the session opens with the
- * card's token id and the existing segment metering charges only while the
- * video plays (Tom, 2026-10-25; movie_system_jubjub
- * docs/design/card-rail-api.md).
- *
- * This module is pure apart from fetchCards(): parsing the cards route,
- * choosing a card, deciding what attach() does, and the prompt text. JubJub.ts
- * applies the decision to the <video>. Unit-tested in test/card.test.ts.
- *
- * The card contract address is never hardcoded here: the backend reads the
- * cards live from the chain and serves them through GET /v2/public/cards.
- */
 /** 'auto' (default): use a card when the piece takes one, else the wallet.
  *  'wallet': never look for a card (today's approve flow).
  *  'card': cards only; the wallet fallback is never offered. */
@@ -20,8 +6,18 @@ export type PayerMode = 'auto' | 'wallet' | 'card';
 export interface CardInfo {
     token_id: number;
     holder: string;
-    /** Micro-USDC (6 decimals). */
+    /**
+     * What the card can really spend, micro-USDC (6 decimals): the backend's
+     * available_micro, its on-chain balance less viewing already watched but not
+     * yet charged (cards are charged in batches). Every decision and every
+     * figure shown uses this. Older backends send no available_micro, and then
+     * it is the on-chain balance.
+     */
     balance_micro: number;
+    /** The on-chain balance (2.5.1). */
+    onchain_balance_micro: number;
+    /** Watched, not yet charged (2.5.1; 0 from older backends). */
+    pending_micro: number;
     frozen: boolean;
     /** Unix seconds; 0 = no burn requested. */
     burn_requested_at: number;
@@ -161,6 +157,11 @@ export declare function cardPromptText(kind: CardPromptKind, amounts?: {
     action: string;
 };
 /**
+ * The one line a card holder reads beside their balance (Tom, 2026-10-26):
+ * why the balance moves in steps rather than every second.
+ */
+export declare const CARD_BATCH_NOTE = "You're only charged for what you watch. Charges are grouped together to keep network fees low, so your balance updates in batches.";
+/**
  * The overlay's card line: what the card can still cover for this session
  * (card_balance_micro at open, minus the cost so far) and the per-second
  * price. Amounts come from the backend and the content's price.
@@ -170,3 +171,10 @@ export declare function cardOverlayText(cardBalanceMicro: number, costUsdc: numb
     perSecond: string;
     remainingUsdc: number;
 };
+/**
+ * Whether "Top up your card" also offers "Pay from your wallet instead"
+ * (Tom, 2026-10-26): in auto payer mode, when the wallet's standing approval
+ * already covers the $0.50 floor, so the fallback asks for no approval.
+ * `allowanceMicro` null means the allowance could not be read: no offer.
+ */
+export declare function offerWalletOnTopUp(mode: string, allowanceMicro: bigint | null): boolean;

@@ -204,6 +204,12 @@ export declare class JubJub extends EventEmitter {
      */
     private _detectCard;
     /**
+     * The wallet's current allowance to the streaming spender, or null when it
+     * cannot be read (no wallet, unsupported chain, RPC failure). Read only to
+     * decide whether a low card also offers the wallet; never prompts.
+     */
+    private _standingAllowance;
+    /**
      * "Pay from your wallet instead" for a host that renders its own card
      * prompt (err.card.walletFallback): this video runs today's approve flow
      * from now on, starting now.

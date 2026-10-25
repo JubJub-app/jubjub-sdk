@@ -109,13 +109,17 @@ import { JubJub } from '../src/JubJub';
 import { Approval } from '../src/core/Approval';
 import { PlaybackUrlRefresher } from '../src/core/PlaybackUrlRefresher';
 import {
+  CARD_BATCH_NOTE,
   cardOverlayText,
+  qualifyingCards,
+  toCardInfo,
   cardPromptText,
   decideCard,
   oneMinuteMicro,
   parseCardsResponse,
   withReturn,
   type CardInfo,
+  offerWalletOnTopUp,
 } from '../src/core/Card';
 import { parseCardNotAccepted } from '../src/streamingErrors';
 
@@ -879,4 +883,42 @@ test('Tier 2 card refusal on refresh: the retry opens a new session, not a refre
   assert.equal(sessionOpens()[1].body.card_token_id, 7);
   assert.equal(approveCalls, 0);
   await sdk.disconnect();
+});
+
+// 2.4.2: cards are charged in batches, so the usable figure is the backend's
+// available_micro (on-chain balance less watched-but-uncharged viewing).
+test('a card reads available_micro as its balance, keeping the on-chain figure', () => {
+  const c = toCardInfo({ token_id: 3, balance_micro: 1_000_000, pending_micro: 400_000,
+    available_micro: 600_000, usable: true });
+  assert.equal(c?.balance_micro, 600_000);
+  assert.equal(c?.onchain_balance_micro, 1_000_000);
+  assert.equal(c?.pending_micro, 400_000);
+});
+
+test('an older backend without available_micro falls back to the balance', () => {
+  const c = toCardInfo({ token_id: 3, balance_micro: 1_000_000, usable: true });
+  assert.equal(c?.balance_micro, 1_000_000);
+  assert.equal(c?.pending_micro, 0);
+});
+
+test('a card whose pending viewing leaves less than a minute does not qualify', () => {
+  const cards = [toCardInfo({ token_id: 1, balance_micro: 10_000, pending_micro: 6_000,
+    available_micro: 4_000, usable: true })!];
+  assert.deepEqual(qualifyingCards(cards, 5_000), []);
+});
+
+test('the batch note is plain and has no em dash', () => {
+  assert.match(CARD_BATCH_NOTE, /only charged for what you watch/);
+  assert.ok(!CARD_BATCH_NOTE.includes('—'));
+});
+
+test('a low card offers the wallet in auto mode when the approval covers the $0.50 floor (Tom 2026-10-26)', () => {
+  assert.equal(offerWalletOnTopUp('auto', 500_000n), true);
+  assert.equal(offerWalletOnTopUp('auto', 9_000_000n), true);
+});
+
+test('a low card offers no wallet below the floor, when unread, or outside auto mode', () => {
+  assert.equal(offerWalletOnTopUp('auto', 499_999n), false);
+  assert.equal(offerWalletOnTopUp('auto', null), false);
+  assert.equal(offerWalletOnTopUp('card', 9_000_000n), false);
 });
